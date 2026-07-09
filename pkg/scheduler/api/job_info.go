@@ -1414,7 +1414,7 @@ func (d *DRAResource) Add(other *DRAResource) {
 	if other == nil {
 		return
 	}
-	d.Count += other.Count
+	d.Count = SaturatingAdd(d.Count, other.Count)
 	if other.Capacity != nil {
 		if d.Capacity == nil {
 			d.Capacity = make(map[string]resource.Quantity)
@@ -1469,7 +1469,7 @@ func (ji *JobInfo) GetMinDRAResources() map[string]*DRAResource {
 				}
 			}
 
-			result[deviceClass].Count += request.Count * int64(times)
+			result[deviceClass].Count = SaturatingAdd(result[deviceClass].Count, SaturatingMul(request.Count, int64(times)))
 			for dim, cap := range request.Capacity {
 				totalCap := cap.DeepCopy()
 				for i := int32(0); i < times-1; i++ {
