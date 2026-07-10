@@ -31,7 +31,7 @@ To leverage that you will need:
 
 ## Setting up Kubernetes
 
-We require Kubernetes version 1.12 or higher with CRD support.
+We require Kubernetes version 1.24 or higher with CRD support.
 
 If you aren't sure which Kubernetes platform is right for you, see [Picking the Right Solution](https://kubernetes.io/docs/setup/).
 
