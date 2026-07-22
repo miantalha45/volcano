@@ -460,7 +460,7 @@ func TestInitPlugin(t *testing.T) {
 			expectNotInFilter:       []string{volumebinding.Name, dynamicresources.Name},
 			expectNotInReserve:      []string{volumebinding.Name, dynamicresources.Name},
 			expectNotInPreBind:      []string{volumebinding.Name, dynamicresources.Name},
-			expectNotInScore:        []string{volumebinding.Name},
+			expectNotInScore:        []string{dynamicresources.Name, volumebinding.Name},
 		},
 		{
 			name:                    "volume binding enabled",
@@ -499,11 +499,11 @@ func TestInitPlugin(t *testing.T) {
 			expectInPrefilter:       []string{nodeaffinity.Name, dynamicresources.Name},
 			expectInReserve:         []string{dynamicresources.Name},
 			expectInPreBind:         []string{dynamicresources.Name},
-			expectInScore:           []string{},
+			expectInScore:           []string{dynamicresources.Name},
 			expectNotInFilter:       []string{volumebinding.Name},
 			expectNotInReserve:      []string{volumebinding.Name},
 			expectNotInPreBind:      []string{volumebinding.Name},
-			expectNotInScore:        []string{dynamicresources.Name, volumebinding.Name},
+			expectNotInScore:        []string{volumebinding.Name},
 		},
 		{
 			name:                    "both volume binding and dra enabled",
@@ -521,8 +521,7 @@ func TestInitPlugin(t *testing.T) {
 			expectInPrefilter:       []string{nodeports.Name, interpodaffinity.Name, podtopologyspread.Name, volumebinding.Name, dynamicresources.Name},
 			expectInReserve:         []string{volumebinding.Name, dynamicresources.Name},
 			expectInPreBind:         []string{volumebinding.Name, dynamicresources.Name},
-			expectInScore:           []string{volumebinding.Name},
-			expectNotInScore:        []string{dynamicresources.Name},
+			expectInScore:           []string{volumebinding.Name, dynamicresources.Name},
 		},
 	}
 
@@ -619,6 +618,11 @@ func TestInitPlugin(t *testing.T) {
 			if tt.enableVolumeBinding {
 				if weight, exists := pp.ScoreWeights[volumebinding.Name]; !exists || weight == 0 {
 					t.Errorf("expected VolumeBinding to have non-zero weight in ScoreWeights")
+				}
+			}
+			if tt.enableDRA {
+				if weight, exists := pp.ScoreWeights[dynamicresources.Name]; !exists || weight != 1 {
+					t.Errorf("expected DynamicResources to have weight 1 in ScoreWeights")
 				}
 			}
 		})

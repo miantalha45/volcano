@@ -634,6 +634,7 @@ func (pp *PredicatesPlugin) InitPlugin() {
 		addPreFilterPlugin(dynamicresources.Name, dynamicResourceAllocationPlugin)
 		addReservePlugin(dynamicresources.Name, dynamicResourceAllocationPlugin)
 		addPreBindPlugin(dynamicresources.Name, dynamicResourceAllocationPlugin)
+		addScorePlugin(dynamicresources.Name, dynamicResourceAllocationPlugin, 1)
 	}
 
 	pp.FilterPlugins = filterPlugins
@@ -771,9 +772,6 @@ func (pp *PredicatesPlugin) BatchNodeOrder(task *api.TaskInfo, nodes []fwk.NodeI
 		if !exists {
 			continue
 		}
-		// Get normalizer (most plugins don't need normalization, use EmptyNormalizer by default)
-		normalizer := &nodescore.EmptyNormalizer{}
-
 		// Get weight from ScoreWeights map, default to 1 if not set
 		weight := 1
 		if w, exists := pp.ScoreWeights[name]; exists {
@@ -781,7 +779,7 @@ func (pp *PredicatesPlugin) BatchNodeOrder(task *api.TaskInfo, nodes []fwk.NodeI
 		}
 
 		// Calculate score using the helper function
-		pluginScores, err := nodescore.CalculatePluginScore(name, plugin, normalizer, state, task.Pod, nodes, weight)
+		pluginScores, err := nodescore.CalculatePluginScore(name, plugin, state, task.Pod, nodes, weight)
 		if err != nil {
 			return nil, err
 		}
