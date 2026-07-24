@@ -45,6 +45,17 @@ func NodeInfosForCandidateNodes(nodes []*api.NodeInfo, nodeMap map[string]fwk.No
 	return nodeInfos
 }
 
+func RunPreScorePlugin(plugin fwk.PreScorePlugin, cycleState fwk.CycleState, pod *v1.Pod, nodeInfos []fwk.NodeInfo) (bool, error) {
+	status := plugin.PreScore(context.TODO(), cycleState, pod, nodeInfos)
+	if status.IsSkip() {
+		return true, nil
+	}
+	if !status.IsSuccess() {
+		return false, status.AsError()
+	}
+	return false, nil
+}
+
 func CalculatePluginScore(
 	pluginName string,
 	plugin BaseScorePlugin,
@@ -53,17 +64,6 @@ func CalculatePluginScore(
 	nodeInfos []fwk.NodeInfo,
 	weight int,
 ) (map[string]float64, error) {
-	if preScorePlugin, ok := plugin.(fwk.PreScorePlugin); ok {
-		preScoreStatus := preScorePlugin.PreScore(context.TODO(), cycleState, pod, nodeInfos)
-		if preScoreStatus.IsSkip() {
-			// Skip Score
-			return map[string]float64{}, nil
-		}
-		if !preScoreStatus.IsSuccess() {
-			return nil, preScoreStatus.AsError()
-		}
-	}
-
 	nodeScoreList := make(fwk.NodeScoreList, len(nodeInfos))
 	// the default parallelization worker number is 16.
 	// the whole scoring will fail if one of the processes failed.

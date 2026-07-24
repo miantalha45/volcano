@@ -105,6 +105,7 @@ type PredicatesPlugin struct {
 	FilterPlugins       map[string]fwk.FilterPlugin
 	StableFilterPlugins map[string]fwk.FilterPlugin // Subset of FilterPlugins for cache-stable filters
 	PreFilterPlugins    map[string]fwk.PreFilterPlugin
+	PreScorePlugins     map[string]fwk.PreScorePlugin
 	ReservePlugins      map[string]fwk.ReservePlugin
 	PreBindPlugins      map[string]fwk.PreBindPlugin
 	ScorePlugins        map[string]nodescore.BaseScorePlugin
@@ -112,6 +113,7 @@ type PredicatesPlugin struct {
 	FilterOrder         []string
 	StableFilterOrder   []string
 	PreFilterOrder      []string
+	PreScoreOrder       []string
 	ReserveOrder        []string
 	PreBindOrder        []string
 	ScoreOrder          []string
@@ -473,6 +475,7 @@ func (pp *PredicatesPlugin) InitPlugin() {
 	filterPlugins := map[string]fwk.FilterPlugin{}
 	stableFilterPlugins := map[string]fwk.FilterPlugin{} // Subset for cache-stable filters
 	prefilterPlugins := map[string]fwk.PreFilterPlugin{}
+	preScorePlugins := map[string]fwk.PreScorePlugin{}
 	reservePlugins := map[string]fwk.ReservePlugin{}
 	scorePlugins := map[string]nodescore.BaseScorePlugin{}
 	preBindPlugins := map[string]fwk.PreBindPlugin{}
@@ -480,6 +483,7 @@ func (pp *PredicatesPlugin) InitPlugin() {
 	var filterOrder []string
 	var stableFilterOrder []string
 	var preFilterOrder []string
+	var preScoreOrder []string
 	var reserveOrder []string
 	var preBindOrder []string
 	var scoreOrder []string
@@ -495,6 +499,10 @@ func (pp *PredicatesPlugin) InitPlugin() {
 	addPreFilterPlugin := func(name string, plugin fwk.PreFilterPlugin) {
 		prefilterPlugins[name] = plugin
 		preFilterOrder = append(preFilterOrder, name)
+	}
+	addPreScorePlugin := func(name string, plugin fwk.PreScorePlugin) {
+		preScorePlugins[name] = plugin
+		preScoreOrder = append(preScoreOrder, name)
 	}
 	addReservePlugin := func(name string, plugin fwk.ReservePlugin) {
 		reservePlugins[name] = plugin
@@ -619,6 +627,7 @@ func (pp *PredicatesPlugin) InitPlugin() {
 		addPreFilterPlugin(volumebinding.Name, volumeBindingPluginInstance)
 		addReservePlugin(volumebinding.Name, volumeBindingPluginInstance)
 		addPreBindPlugin(volumebinding.Name, volumeBindingPluginInstance)
+		addPreScorePlugin(volumebinding.Name, volumeBindingPluginInstance)
 		addScorePlugin(volumebinding.Name, volumeBindingPluginInstance, vbArgs.Weight)
 	}
 	// 10. DRA
@@ -640,6 +649,7 @@ func (pp *PredicatesPlugin) InitPlugin() {
 	pp.FilterPlugins = filterPlugins
 	pp.StableFilterPlugins = stableFilterPlugins
 	pp.PreFilterPlugins = prefilterPlugins
+	pp.PreScorePlugins = preScorePlugins
 	pp.ReservePlugins = reservePlugins
 	pp.PreBindPlugins = preBindPlugins
 	pp.ScorePlugins = scorePlugins
@@ -647,6 +657,7 @@ func (pp *PredicatesPlugin) InitPlugin() {
 	pp.FilterOrder = filterOrder
 	pp.StableFilterOrder = stableFilterOrder
 	pp.PreFilterOrder = preFilterOrder
+	pp.PreScoreOrder = preScoreOrder
 	pp.ReserveOrder = reserveOrder
 	pp.PreBindOrder = preBindOrder
 	pp.ScoreOrder = scoreOrder
@@ -765,9 +776,28 @@ func (pp *PredicatesPlugin) Predicate(task *api.TaskInfo, node *api.NodeInfo, st
 // BatchNodeOrder runs all Score plugins for the given task and nodes.
 func (pp *PredicatesPlugin) BatchNodeOrder(task *api.TaskInfo, nodes []fwk.NodeInfo, state *k8sframework.CycleState) (map[string]float64, error) {
 	nodeScores := make(map[string]float64, len(nodes))
+	skippedScorePlugins := map[string]struct{}{}
+
+	for _, name := range pp.PreScoreOrder {
+		plugin, exists := pp.PreScorePlugins[name]
+		if !exists {
+			continue
+		}
+
+		skipScore, err := nodescore.RunPreScorePlugin(plugin, state, task.Pod, nodes)
+		if err != nil {
+			return nil, fmt.Errorf("pre-score plugin %s failed: %w", name, err)
+		}
+		if skipScore {
+			skippedScorePlugins[name] = struct{}{}
+		}
+	}
 
 	// Run all Score plugins
 	for _, name := range pp.ScoreOrder {
+		if _, skipped := skippedScorePlugins[name]; skipped {
+			continue
+		}
 		plugin, exists := pp.ScorePlugins[name]
 		if !exists {
 			continue

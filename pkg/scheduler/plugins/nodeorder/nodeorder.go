@@ -365,6 +365,16 @@ func (pp *NodeOrderPlugin) BatchNodeOrderFn(task *api.TaskInfo, nodes []*api.Nod
 	nodeScores := make(map[string]float64, len(nodes))
 
 	for name, entry := range pp.ScorePlugins {
+		if preScorePlugin, ok := entry.plugin.(fwk.PreScorePlugin); ok {
+			skipScore, err := nodescore.RunPreScorePlugin(preScorePlugin, state, task.Pod, nodeInfos)
+			if err != nil {
+				return nil, err
+			}
+			if skipScore {
+				continue
+			}
+		}
+
 		scores, err := nodescore.CalculatePluginScore(name, entry.plugin, state, task.Pod, nodeInfos, entry.weight)
 		if err != nil {
 			return nil, err
