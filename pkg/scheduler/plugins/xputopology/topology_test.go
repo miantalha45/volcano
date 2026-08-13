@@ -21,6 +21,45 @@ func TestSelectLocalDomainRejectsFragmentedCapacity(t *testing.T) {
 	}
 }
 
+func TestSelectLocalDomainRejectsHAMiShapedNetworkIDFragmentation(t *testing.T) {
+	// This fixture mirrors the legacy HAMi Ascend910 NetworkID input shape:
+	// ten physical devices split evenly across two independent local groups.
+	// The generic model receives the provider-normalized result, not the
+	// vendor-specific CustomInfo["NetworkID"] field itself.
+	devices := make([]Device, 0, 10)
+	domains := make([]LocalDomain, 0, 2)
+	for networkID := 0; networkID < 2; networkID++ {
+		domainID := fmt.Sprintf("node-ascend-0/network-%d", networkID)
+		deviceIDs := make([]DeviceID, 0, 5)
+		for index := 0; index < 5; index++ {
+			deviceID := DeviceID(fmt.Sprintf("Ascend910-network-%d-device-%d", networkID, index))
+			devices = append(devices, Device{
+				ID:       deviceID,
+				Resource: "huawei.com/Ascend910",
+				Node:     "node-ascend-0",
+				Domain:   domainID,
+				Healthy:  true,
+			})
+			deviceIDs = append(deviceIDs, deviceID)
+		}
+		domains = append(domains, LocalDomain{
+			ID:        domainID,
+			Node:      "node-ascend-0",
+			DeviceIDs: deviceIDs,
+		})
+	}
+
+	snapshot, err := NewSnapshot(devices, domains)
+	if err != nil {
+		t.Fatalf("create HAMi-shaped topology snapshot: %v", err)
+	}
+
+	_, err = snapshot.SelectLocalDomain(NewLedger(snapshot), "node-ascend-0", "huawei.com/Ascend910", 8)
+	if !errors.Is(err, ErrNoEligibleLocalDomain) {
+		t.Fatalf("expected 5/5 NetworkID fragmentation to reject an 8-device same-domain request, got %v", err)
+	}
+}
+
 func TestSelectLocalDomainSelectsDeterministicDeviceIDs(t *testing.T) {
 	snapshot := newSnapshot(t, map[string]int{
 		"hccs-a": 8,
