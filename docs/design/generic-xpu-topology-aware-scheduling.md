@@ -120,6 +120,8 @@ flowchart LR
 
 Providers are responsible only for consuming topology facts. They do not discover hardware, configure devices, or invent a topology from aggregate Node capacity. The component that owns the hardware inventory (an administrator, vendor operator, Device Plugin companion, or DRA driver) publishes facts, the provider validates and forwards them.
 
+The allocation backend is not required to expose topology itself. If a backend has no per-device domain model, another trusted source may publish the domain facts, provided the resulting device identities can be mapped unambiguously to the devices understood by the allocation adapter.
+
 The alpha implementation has two providers:
 
 | Provider | Purpose | Data path |
@@ -822,7 +824,7 @@ Scale benchmarks simulate dense devices, fragmented capacity, large fabric sets,
 
 1. Is `PodGroup` the appropriate initial scheduler-facing location for a typed `xpuTopology` policy with `Required` and `Preferred` semantics?
 2. Is the first scope—full devices, Node-local domains, annotation/mock provider, and mock/compatible exact enforcement—appropriate for an alpha feature?
-3. Is the separation between topology providers, allocation adapters, and scheduling policy acceptable?
+3. Is the separation between topology providers, allocation adapters, and scheduling policy acceptable, and what identity contract should connect provider-reported devices to allocator device IDs when they come from different sources?
 4. Should Volcano add a generic gang-plan/`Statement` reservation extension rather than embedding topology-specific global planning directly in `allocate`?
 5. Should declared cross-Node fabric affinity be included in the alpha mock/KWOK scope or follow local-domain correctness in a later phase?
 
