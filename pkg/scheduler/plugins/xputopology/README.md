@@ -36,6 +36,7 @@ flowchart LR
     Update[ProviderUpdate\nNode, generation, devices, domains]
     Cache[TopologyCache]
     Snapshot[Read-only Snapshot\ndevices, local domains, indexes]
+    Summary[Domain feasibility summary\nfilter invalid Nodes or groups]
     Select[SelectLocalDomain\nchoose one eligible domain]
     Plan[PlanGang\nselect every task placement]
     Ledger[Ledger\nfree, reserved, unhealthy]
@@ -43,6 +44,9 @@ flowchart LR
 
     Update --> Cache
     Cache --> Snapshot
+    Snapshot --> Summary
+    Ledger --> Summary
+    Summary --> Select
     Snapshot --> Select
     Snapshot --> Plan
     Select --> Plan
@@ -53,9 +57,10 @@ flowchart LR
 
 1. `TopologyCache.Apply` accepts a Node update only when its generation is newer than the stored generation.
 2. The cache validates the update and creates a new `Snapshot`.
-3. `SelectLocalDomain` looks for enough healthy and free devices inside one domain.
-4. `PlanGang` finds a placement for every requested task before changing the ledger.
-5. `TryReserve` reserves every selected device ID together or leaves all IDs unchanged.
+3. `BuildDomainFeasibilitySummary` can remove Nodes or candidate groups that have no valid local domain before later placement stages run.
+4. `SelectLocalDomain` looks for enough healthy and free devices inside one domain.
+5. `PlanGang` finds a placement for every requested task before changing the ledger.
+6. `TryReserve` reserves every selected device ID together or leaves all IDs unchanged.
 
 ## Main Types
 
@@ -82,6 +87,12 @@ This gives two useful properties:
 
 The HAMi-shaped test uses ten Ascend910 devices split into two independent five-device `NetworkID` groups. An eight-device request fails even though the Node has ten devices in total. The POC receives generic local-domain facts. It does not depend on HAMi fields or vendor-specific selection logic.
 
+## Candidate-Domain Filtering
+
+`BuildDomainFeasibilitySummary` prepares a read-only summary before a later Node or HyperNode selection step. It removes a Node only when no local domain has enough healthy, free devices for the request. It keeps the input order for the remaining Nodes.
+
+The POC represents an upstream candidate scope with `CandidateGroup`. A group stays eligible when at least one member Node has a fitting local domain. This is intentionally not a new HyperNode gradient or a registered scheduler hook. It demonstrates the required direction: domain facts should narrow candidate Nodes before normal Node placement decides among them.
+
 ## Gang Planning and Atomic Reservation
 
 The POC plans the whole Gang before it reserves a device.
@@ -104,7 +115,9 @@ sequenceDiagram
     end
 ```
 
-`PlanGang` prevents one task from using device IDs that another task in the same plan already selected. If any task has no valid local-domain placement, it returns `ErrGangPlanIncomplete` before reserving any ID.
+`PlanGang` prevents one task from using device IDs that another task in the same plan already selected. It tries candidate Nodes in deterministic order. If an early placement blocks a later Task, it tries another earlier placement. The POC limits this search to 32 placement alternatives, so a difficult input cannot search without a bound.
+
+If the POC cannot complete the Gang plan within that bound, it returns `ErrGangPlanIncomplete` before reserving any ID. It does not yet define the production task ordering or the final Gang framework hook.
 
 `TryReserve` holds a mutex while it checks the complete request. It rejects duplicate IDs, an existing reservation ID, and every device that is not free. On failure, it does not reserve the earlier IDs from the request.
 
@@ -128,7 +141,10 @@ device-1 free, device-2 reserved    -> reserve neither
 | `TestReleaseMakesDevicesAvailableAgain` | Releasing a reservation returns reserved devices to free state. |
 | `TestNewSnapshotRejectsUnknownDomainMember` | Rejects invalid device-to-domain membership. |
 | `TestTopologyCacheUpdatesOnlyAffectedNode` | Accepts a newer Node generation, preserves other Node facts, and rejects a stale update. |
+| `TestDomainFeasibilitySummaryFiltersFragmentedCandidateGroups` | Removes a fragmented candidate group before Node selection while retaining a group with one valid local domain. |
 | `TestPlanGangReservesEveryTaskOrNothing` | Reserves all task IDs for a complete Gang plan and leaves the ledger unchanged for an incomplete plan. |
+| `TestPlanGangBacktracksToCompletePlacement` | Retries an earlier Task on another Node when the first deterministic choice blocks a later Task. |
+| `TestPlanGangAlternativeLimitLeavesLedgerUnchanged` | Stops bounded search without reserving IDs. |
 
 Run the focused tests:
 

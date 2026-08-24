@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -179,6 +180,34 @@ func TestTopologyCacheUpdatesOnlyAffectedNode(t *testing.T) {
 	}
 }
 
+func TestDomainFeasibilitySummaryFiltersFragmentedCandidateGroups(t *testing.T) {
+	fragmentedDevices, fragmentedDomains := nodeTopologyWithDomains("fragmented-node", map[string]int{
+		"fragmented-hccs-a": 6,
+		"fragmented-hccs-b": 2,
+	})
+	validDevices, validDomains := nodeTopology("valid-node", "valid-hccs", 8)
+	snapshot, err := NewSnapshot(append(fragmentedDevices, validDevices...), append(fragmentedDomains, validDomains...))
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	summary, err := BuildDomainFeasibilitySummary(snapshot, NewLedger(snapshot), accelerator, 8)
+	if err != nil {
+		t.Fatalf("build feasibility summary: %v", err)
+	}
+	if got, want := summary.FilterNodes([]string{"fragmented-node", "valid-node"}), []string{"valid-node"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected filtered Nodes: got %#v, want %#v", got, want)
+	}
+
+	groups := []CandidateGroup{
+		{ID: "fragmented-hypernode", Nodes: []string{"fragmented-node"}},
+		{ID: "valid-hypernode", Nodes: []string{"valid-node"}},
+	}
+	if got, want := summary.FilterCandidateGroups(groups), []CandidateGroup{{ID: "valid-hypernode", Nodes: []string{"valid-node"}}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected filtered candidate groups: got %#v, want %#v", got, want)
+	}
+}
+
 func TestPlanGangReservesEveryTaskOrNothing(t *testing.T) {
 	workerADevices, workerADomains := nodeTopology("worker-a", "hccs-a", 4)
 	workerBDevices, workerBDomains := nodeTopology("worker-b", "hccs-b", 4)
@@ -219,6 +248,56 @@ func TestPlanGangReservesEveryTaskOrNothing(t *testing.T) {
 	}
 	if got := limitedLedger.State("hccs-a-device-0"); got != DeviceFree {
 		t.Fatalf("expected incomplete plan to leave first task device free, got %q", got)
+	}
+}
+
+func TestPlanGangBacktracksToCompletePlacement(t *testing.T) {
+	workerADevices, workerADomains := nodeTopology("worker-a", "hccs-a", 4)
+	workerBDevices, workerBDomains := nodeTopology("worker-b", "hccs-b", 4)
+	snapshot, err := NewSnapshot(append(workerADevices, workerBDevices...), append(workerADomains, workerBDomains...))
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	ledger := NewLedger(snapshot)
+	plan, err := PlanGang(snapshot, ledger, "training", []TaskRequest{
+		{ID: "first", CandidateNodes: []string{"worker-a", "worker-b"}, Resource: accelerator, Count: 4},
+		{ID: "second", CandidateNodes: []string{"worker-a"}, Resource: accelerator, Count: 4},
+	})
+	if err != nil {
+		t.Fatalf("plan gang with backtracking: %v", err)
+	}
+
+	want := []TaskPlacement{
+		{TaskID: "first", Placement: Placement{Node: "worker-b", Domain: "hccs-b", DeviceIDs: []DeviceID{"hccs-b-device-0", "hccs-b-device-1", "hccs-b-device-2", "hccs-b-device-3"}}},
+		{TaskID: "second", Placement: Placement{Node: "worker-a", Domain: "hccs-a", DeviceIDs: []DeviceID{"hccs-a-device-0", "hccs-a-device-1", "hccs-a-device-2", "hccs-a-device-3"}}},
+	}
+	if !reflect.DeepEqual(plan.TaskPlacements, want) {
+		t.Fatalf("unexpected backtracking plan: got %#v, want %#v", plan.TaskPlacements, want)
+	}
+	if len(plan.Reservation.DeviceIDs) != 8 {
+		t.Fatalf("expected eight reserved device IDs, got %#v", plan.Reservation.DeviceIDs)
+	}
+}
+
+func TestPlanGangAlternativeLimitLeavesLedgerUnchanged(t *testing.T) {
+	workerADevices, workerADomains := nodeTopology("worker-a", "hccs-a", 4)
+	workerBDevices, workerBDomains := nodeTopology("worker-b", "hccs-b", 4)
+	snapshot, err := NewSnapshot(append(workerADevices, workerBDevices...), append(workerADomains, workerBDomains...))
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	ledger := NewLedger(snapshot)
+	_, err = planGangWithLimit(snapshot, ledger, "limited", []TaskRequest{
+		{ID: "first", CandidateNodes: []string{"worker-a", "worker-b"}, Resource: accelerator, Count: 4},
+		{ID: "second", CandidateNodes: []string{"worker-a"}, Resource: accelerator, Count: 4},
+	}, 1)
+	if !errors.Is(err, ErrGangPlanIncomplete) {
+		t.Fatalf("expected incomplete plan after alternative limit, got %v", err)
+	}
+	if got := ledger.State("hccs-a-device-0"); got != DeviceFree {
+		t.Fatalf("expected failed plan to leave ledger unchanged, got %q", got)
 	}
 }
 
@@ -274,4 +353,21 @@ func nodeTopology(node, domainID string, size int) ([]Device, []LocalDomain) {
 		Node:      node,
 		DeviceIDs: deviceIDs,
 	}}
+}
+
+func nodeTopologyWithDomains(node string, domainSizes map[string]int) ([]Device, []LocalDomain) {
+	domainIDs := make([]string, 0, len(domainSizes))
+	for domainID := range domainSizes {
+		domainIDs = append(domainIDs, domainID)
+	}
+	sort.Strings(domainIDs)
+
+	devices := make([]Device, 0)
+	domains := make([]LocalDomain, 0, len(domainIDs))
+	for _, domainID := range domainIDs {
+		domainDevices, domain := nodeTopology(node, domainID, domainSizes[domainID])
+		devices = append(devices, domainDevices...)
+		domains = append(domains, domain...)
+	}
+	return devices, domains
 }
