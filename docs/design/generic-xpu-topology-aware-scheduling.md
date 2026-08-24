@@ -496,10 +496,11 @@ The first alpha implementation does not make legacy `deviceshare` backends impli
 
 ### Per-Task Filter and Score
 
-At session open, the plugin captures an immutable topology snapshot. It uses existing session extension points as follows:
+At session open, the plugin captures an immutable topology snapshot. It uses existing session extension points and one proposed candidate-preparation integration as follows:
 
 | Phase | Integration | Effect |
 | --- | --- | --- |
+| Candidate preparation | Proposed reviewed framework integration | Builds a read-only domain-feasibility summary before HyperNode and Node selection. It reports whether each Node has a current domain that could satisfy the request. |
 | Filter | `Session.AddPredicateFn` | Rejects a Node when Required local-domain/fabric, freshness, health, or enforcement conditions fail. |
 | Score | `Session.AddNodeOrderFn` or `AddBatchNodeOrderFn` | Adds Preferred-affinity and compact-placement scores after normal eligibility. |
 | Gang plan | New framework-owned `GangPlan` hook in `allocate`. | Selects all Nodes/domains/IDs and reserves them together before `Statement.Allocate`. |
@@ -514,13 +515,14 @@ For `Compact`, the plugin prefers an exact domain fit, then the smallest domain 
 | Scheduler stage | Plugin responsibility | Existing owner that remains authoritative |
 | --- | --- | --- |
 | Request preparation | Resolve the PodGroup policy and its Pod resource or claim selector. | Webhook validates the policy, predicates resolves standard Pod feasibility. |
+| Candidate preparation | Publish a read-only domain-feasibility summary before HyperNode and Node selection. The summary contains no reservation and no final device assignment. | HyperNode and Node selection retain ownership of network candidate construction. The integration hook requires framework review. |
 | Predicate | Check that a candidate Node has a current, healthy, enforceable local domain and, when required, belongs to the selected fabric. | `predicates` and normal Node resource accounting. |
 | Node ordering | Prefer matching fabric/locality and compact, less-fragmented domains. | Existing nodeorder and network-topology-aware scores continue to participate. |
 | Gang planning | Select all Nodes, local domains, and device IDs for the plan unit. | `allocate` continues to control task allocation order and gang readiness. |
 | Reservation | Atomically reserve topology IDs and attach the reservation to the current transaction. | `Statement` remains the owner of normal task/Node mutation. |
 | Reconciliation | Observe authoritative allocation/release/health updates and update the ledger. | Provider/adapter source remains authoritative for device state. |
 
-The plugin uses `Session.AddPredicateFn` for hard eligibility and `Session.AddNodeOrderFn` or `AddBatchNodeOrderFn` for preferences. It must run after the normal candidate set has been formed. A topology score cannot turn a Node that failed normal predicates into an eligible Node, and a topology plan cannot bypass Queue, DRF, capacity, gang, priority, preemption, NodeShard, or network constraints.
+The plugin uses `Session.AddPredicateFn` for final hard eligibility and `Session.AddNodeOrderFn` or `AddBatchNodeOrderFn` for preferences. Before candidate selection, the proposed integration publishes domain-related feasibility information from the topology snapshot and live ledger. For a Required request, HyperNode and Node selection can use this information to avoid carrying Nodes that have no fitting device domain. For a Preferred request, it is score input only and normal placement remains valid. The exact framework hook and ordering require maintainer review. A topology score cannot turn a Node that failed normal predicates into an eligible Node, and a topology plan cannot bypass Queue, DRF, capacity, gang, priority, preemption, NodeShard, or network constraints.
 
 The plugin must also remain independent of `deviceshare` implementations. A device pool may be used as an adapter input only after it proves stable identity and no double-accounting, otherwise the two features run independently and a topology Required request is rejected when exact enforcement is unavailable.
 
@@ -531,9 +533,10 @@ The plugin participates in Volcano's existing scheduling path. It does not build
 ```text
 OpenSession
   -> capture immutable topology snapshot
-  -> existing Queue, gang, NodeShard, and HyperNode constraints narrow candidates
+  -> build read-only xPU domain-feasibility summary
+  -> existing Queue, gang, NodeShard, HyperNode, and Node selection use the summary
   -> normal predicates check Node-level Kubernetes feasibility
-  -> xpu-topology-aware predicate checks topology-domain feasibility
+  -> xpu-topology-aware predicate rechecks topology-domain feasibility against live state
   -> existing Node order plugins and xpu topology preferences score candidates
   -> xPU gang planner selects complete Node/domain/device-ID plan when required
   -> topology cache atomically reserves selected IDs
@@ -545,9 +548,10 @@ OpenSession
 ```mermaid
 flowchart TB
     SO[OpenSession: capture topology snapshot]
-    Q[Queue, gang, NodeShard and HyperNode scope]
+    DS[Build read-only xPU domain-feasibility summary]
+    Q[Queue, gang, NodeShard, HyperNode and Node candidate selection]
     P[Existing Node predicates]
-    XPF[xpu-topology-aware predicate]
+    XPF[xpu-topology-aware exact feasibility recheck]
     S[Node scoring: existing plugins + xPU preferred/compact score]
     GP[Required gang plan: Node -> local domain -> device IDs]
     R[TryReserve complete topology plan]
@@ -558,7 +562,7 @@ flowchart TB
     B[Existing bind path]
     OBS[Provider/adapter allocation observation]
 
-    SO --> Q --> P --> XPF --> S --> GP --> R --> ST --> C
+    SO --> DS --> Q --> P --> XPF --> S --> GP --> R --> ST --> C
     C -->|yes| COMMIT --> B --> OBS
     C -->|no| DISCARD
 ```
@@ -570,11 +574,11 @@ eligible Task/Node = existing Volcano/Kubernetes predicates
                      AND xPU domain/fabric/health/enforcement predicate
 ```
 
-`network-topology-aware` remains optional and separate. When a workload has both a network topology policy and a Required xPU fabric policy, xPU feasibility is applied only to Nodes inside the resolved HyperNode/network scope, then removes fabric-nonmember Nodes from that scope. HyperNode contributes network locality only. It must never synthesize device domains or own device IDs.
+`network-topology-aware` remains optional and separate. For a workload with both a network topology policy and a Required xPU fabric policy, the proposed xPU domain-feasibility summary is available before HyperNode and Node selection. The selected network path can use the summary to exclude Nodes without a fitting domain, then the xPU predicate rechecks fabric membership and exact feasibility against live state. HyperNode contributes network locality only. It must never synthesize device domains or own device IDs.
 
-Current `HyperNodeGradientForJobFn` and `HyperNodeGradientForSubJobFn` use the first enabled gradient callback rather than intersecting results from multiple plugins. Therefore the alpha xPU plugin must not register a competing HyperNode-gradient callback and assume intersection exists. It consumes the already-resolved candidate Node scope and applies fabric membership as a normal xPU predicate. If maintainers want multiple independent HyperNode-gradient policies to compose, that needs a separate framework API which defines ordering, intersection, empty-result behavior, and scoring semantics before xPU relies on it.
+Current `HyperNodeGradientForJobFn` and `HyperNodeGradientForSubJobFn` use the first enabled gradient callback rather than intersecting results from multiple plugins. Therefore the xPU plugin must not register a competing HyperNode-gradient callback and assume intersection exists. The proposed direction is a reviewed way to expose one read-only domain-feasibility summary to the existing HyperNode and Node candidate-selection path. It must define ordering, empty-result behavior, and failure semantics before xPU relies on it. Until then, xPU remains a later predicate and does not claim early candidate pruning.
 
-Group topology affinity is a proposed HyperNode-level capability and is not implemented yet. If introduced, it must use an explicit framework-defined composition of HyperNode candidate scopes. The xPU plugin consumes that resolved scope and applies fabric and device feasibility, rather than registering a competing gradient callback.
+Group topology affinity is a proposed HyperNode-level capability and is not implemented yet. If introduced, it must use an explicit framework-defined composition of HyperNode candidate scopes. It can consume the same read-only xPU domain-feasibility summary, rather than requiring xPU to register a competing gradient callback.
 
 Hard xPU requirements are evaluated before topology preference. A Required local domain or fabric failure produces a structured xPU fit error and is not converted to a low score. Preferred local-domain/fabric and Compact rules contribute scores only after normal eligibility. The first alpha implementation should use the existing predicate and Node-order callback mechanisms, any new gang-planning callback requires explicit framework review rather than hidden logic in a single plugin.
 
@@ -597,7 +601,7 @@ type GangPlan interface {
 type GangPlanFn func(*GangPlanContext) (GangPlan, error)
 ```
 
-`CandidateNodes` contains only Nodes that already passed the normal scheduler predicates and any applicable Queue, NodeShard, and HyperNode/network scope. A gang plan therefore cannot expand the candidate set or bypass existing scheduling policy. The xPU implementation returns its selected `TopologyTaskPlacement` values and a reservation participant only when it can plan every required task.
+`CandidateNodes` contains only Nodes that already passed normal scheduler predicates and any applicable Queue, NodeShard, and HyperNode/network scope. When the reviewed early integration is available, this candidate selection also consumes the read-only xPU domain-feasibility summary. A gang plan therefore cannot expand the candidate set or bypass existing scheduling policy. The xPU implementation returns its selected `TopologyTaskPlacement` values and a reservation participant only when it can plan every required task.
 
 The plugin continues to use existing callbacks for per-Task work and registers the proposed planning callback at session open:
 
@@ -617,7 +621,7 @@ Per-Pod filtering cannot safely coordinate a gang: allocating the first Pod gree
 
 ```mermaid
 flowchart TD
-    Candidates[Normal Queue, NodeShard, and predicate candidates] --> Scope[Apply HyperNode and required fabric scope]
+    Candidates[Domain-aware Queue, NodeShard, HyperNode, and predicate candidates] --> Scope[Apply required fabric scope and exact feasibility recheck]
     Scope --> Plan["Plan every required task<br/>Node, local domain, and device IDs"]
     Plan --> Reserve{Reserve every selected ID?}
     Reserve -->|no| Pending["Keep the gang pending<br/>No partial allocation"]
@@ -757,7 +761,7 @@ The following package layout keeps source parsing, reusable scheduler API types,
 | Cache integration | `pkg/scheduler/cache/cache.go`, `event_handlers.go`, `cache_mock.go` | Initialize the cache, enforce provider initial-sync readiness, feed existing Node synchronization into the annotation provider, and initialize test caches. |
 | Session integration | `pkg/scheduler/framework/framework.go`, `session.go` | Capture and expose a read-only topology snapshot at session open. |
 | Transaction integration | `pkg/scheduler/framework/statement.go`, proposed `topology_transaction.go` | Attach reservation participants and commit/rollback them with task operations. |
-| Plugin | `pkg/scheduler/plugins/xputopology/` | Policy resolution, predicate, score, gang planner, reservation participant, and tests. |
+| Plugin | `pkg/scheduler/plugins/xputopology/` | Policy resolution, domain-feasibility summary, predicate, score, gang planner, reservation participant, and tests. |
 | Allocation integration | `pkg/scheduler/actions/allocate/allocate.go` | Request one complete plan before tentative allocation of the applicable gang unit. |
 | Configuration | `pkg/scheduler/conf/volcano_features.go`, scheduler config/Helm values | Feature gate and plugin arguments. |
 | API and webhook | scheduling API types, generated code, queue/job webhook validation | Added only after typed `PodGroup.xpuTopology` API review is accepted. |
@@ -799,7 +803,7 @@ The implementation is phased as follows:
 | Phase | Deliverable |
 | --- | --- |
 | 1 | Canonical types/cache, feature gate, annotation/mock provider, annotation schema validation, immutable indexes, and unit tests. |
-| 2 | Session snapshot exposure, Required/Preferred local-domain filtering, compact scoring, fit reasons, and disabled-feature regressions. |
+| 2 | Session snapshot exposure, reviewed domain-summary integration for HyperNode and Node selection, Required/Preferred local-domain filtering, compact scoring, fit reasons, and disabled-feature regressions. |
 | 3 | Gang-plan API, reservation ledger, `Statement` transaction participant, failure injection, and concurrency tests. |
 | 4 | Mock/KWOK cross-Node fabric and HyperNode intersection, E2E scenarios, benchmarks, operational metrics, and user documentation. |
 
@@ -825,7 +829,7 @@ Scale benchmarks simulate dense devices, fragmented capacity, large fabric sets,
 1. Is `PodGroup` the appropriate initial scheduler-facing location for a typed `xpuTopology` policy with `Required` and `Preferred` semantics?
 2. Is the first scope—full devices, Node-local domains, annotation/mock provider, and mock/compatible exact enforcement—appropriate for an alpha feature?
 3. Is the separation between topology providers, allocation adapters, and scheduling policy acceptable, and what identity contract should connect provider-reported devices to allocator device IDs when they come from different sources?
-4. Should Volcano add a generic gang-plan/`Statement` reservation extension rather than embedding topology-specific global planning directly in `allocate`?
+4. What framework integration should expose the read-only xPU domain-feasibility summary before HyperNode and Node selection, without adding a competing HyperNode-gradient callback?
 5. Should declared cross-Node fabric affinity be included in the alpha mock/KWOK scope or follow local-domain correctness in a later phase?
 
 ## References
