@@ -24,6 +24,7 @@
     - [Availability and Aggregate Resource Safety](#availability-and-aggregate-resource-safety)
   - [Workload Policy](#workload-policy)
     - [Proposed API Types and Semantics](#proposed-api-types-and-semantics)
+    - [Subgroup xPU Policy](#subgroup-xpu-policy)
     - [Admission Webhook Validation](#admission-webhook-validation)
   - [Providers and Allocation Adapters](#providers-and-allocation-adapters)
     - [Allocation Adapter Contract](#allocation-adapter-contract)
@@ -115,7 +116,7 @@ Free devices on ordinary Nodes must not be treated as one shared xPU domain. A D
 
 ## Non-goals
 
-The first milestone does not implement vendor discovery, device configuration, NCCL ring construction, MIG/vGPU/fractional-device allocation, topology-aware victim selection, or SubGroup-level xPU policies. It does not replace DRA, Device Plugins, `deviceshare`, HyperNodes, or aggregate Kubernetes resource accounting. It also does not infer topology from device indices, PCI addresses, or aggregate capacity: providers must publish explicit topology facts.
+The first milestone does not implement vendor discovery, device configuration, NCCL ring construction, MIG/vGPU/fractional-device allocation, topology-aware victim selection, or hierarchical composition of parent and SubGroup xPU policies. It does not replace DRA, Device Plugins, `deviceshare`, HyperNodes, or aggregate Kubernetes resource accounting. It also does not infer topology from device indices, PCI addresses, or aggregate capacity: providers must publish explicit topology facts.
 
 Existing `preempt` and `gangpreempt` actions remain supported and may evict Pods holding xPU devices. The alpha only defers using xPU topology to choose victims or to change existing preemption policy. Eviction, like completion and deletion, must be observed by the topology allocation lifecycle so that it cannot leak a device reservation or allocation.
 
@@ -612,15 +613,15 @@ Provider fields describing shared memory, cores, virtual-device count, MIG, or o
 
 ### Workload Policy
 
-xPU topology scheduling applies only to Pods whose `spec.schedulerName` is `volcano`. It cannot influence Pods scheduled by Kubernetes `kube-scheduler`. The scheduler reads one canonical `PodGroup.spec.xpuTopology` policy, regardless of the workload controller that created the Pods:
+xPU topology scheduling applies only to Pods whose `spec.schedulerName` is `volcano`. It cannot influence Pods scheduled by Kubernetes `kube-scheduler`. The scheduler reads a canonical policy from either `PodGroup.spec.xpuTopology` for the entire PodGroup or the matching `PodGroup.spec.subGroupPolicy[].xpuTopology` for one existing SubJob:
 
 1. A Volcano Job uses typed `spec.xpuTopology`, which the Job controller copies to its generated `PodGroup.spec.xpuTopology`.
 2. A user who creates a PodGroup directly sets the same typed `spec.xpuTopology` field.
 3. A normal Volcano-scheduled Pod uses the documented `volcano.sh/xpu-topology` annotation. The PodGroup controller parses it as an `XPUTopologySpec` and writes the normalized result to the automatically generated PodGroup.
 
-This lets Deployments, StatefulSets, and other controllers use xPU topology scheduling by setting `schedulerName: volcano` and the xPU annotation in their Pod template. `volcano.sh/group-min-member` defines the gang size when such a workload needs gang-wide xPU planning. A workload without that annotation still receives the existing Volcano scheduling behavior.
+This lets Deployments, StatefulSets, and other controllers use whole-PodGroup xPU topology scheduling by setting `schedulerName: volcano` and the xPU annotation in their Pod template. `volcano.sh/group-min-member` defines the gang size when such a workload needs gang-wide xPU planning. A workload without that annotation still receives the existing Volcano scheduling behavior.
 
-The alpha policy applies uniformly to the PodGroup scheduling unit. Every Task admitted under the policy must resolve every declared extended-resource requirement to exactly one regular container with an integral whole-device request. A Task that does not request that resource is not silently skipped, it makes the PodGroup ineligible with `XPUTopologyUnsupportedPodRequest`. Different task-group policies, heterogeneous accelerator Task templates, init-container accelerator requests, and per-container policy targeting are deferred because they require explicit inheritance and allocation-lifecycle semantics. Exact API names and versions require API review. The following examples are illustrative.
+The alpha policy applies uniformly to its scheduling unit: the complete PodGroup for `spec.xpuTopology`, or one matching SubJob for `subGroupPolicy[].xpuTopology`. Every Task admitted under that policy must resolve every declared extended-resource requirement to exactly one regular container with an integral whole-device request. A Task that does not request that resource is not silently skipped, it makes its policy unit ineligible with `XPUTopologyUnsupportedPodRequest`. A parent `xpuTopology` policy and any subgroup `xpuTopology` policy are mutually exclusive in alpha. This avoids ambiguous fabric scope and inheritance. Heterogeneous accelerator Task templates, init-container accelerator requests, per-container policy targeting, and hierarchical parent-plus-subgroup xPU composition are deferred because they require explicit inheritance and allocation-lifecycle semantics. Exact API names and versions require API review. The following examples are illustrative.
 
 **Volcano Job:**
 
@@ -744,7 +745,7 @@ The webhook validates feature-gate use, one resource selector per requirement, a
 
 #### Proposed API Types and Semantics
 
-`xpuTopology` is one optional typed field on `JobSpec` and `PodGroupSpec`. For normal Volcano-scheduled Pods, `volcano.sh/xpu-topology` is the documented serialized form of the same type and is converted to the generated `PodGroupSpec` field by the PodGroup controller. The scheduler reads only the typed PodGroup form. It does not replace existing `networkTopology`, `subGroupPolicy`, Pod `affinity`, or Pod `topologySpreadConstraints`. Those fields continue to express network placement, group membership, and ordinary Kubernetes Pod placement. `xpuTopology` expresses only accelerator-domain intent. Its nested `mode` fields use the same `hard` and `soft` vocabulary as `networkTopology.mode`.
+`xpuTopology` is an optional typed field on `JobSpec`, `PodGroupSpec`, and `SubGroupPolicySpec`. For normal Volcano-scheduled Pods, `volcano.sh/xpu-topology` is the documented serialized form of the parent-level type and is converted to the generated `PodGroupSpec` field by the PodGroup controller. The scheduler reads only typed PodGroup and subgroup forms. It does not replace existing `networkTopology`, `subGroupPolicy`, Pod `affinity`, or Pod `topologySpreadConstraints`. Those fields continue to express network placement, group membership, and ordinary Kubernetes Pod placement. `xpuTopology` expresses only accelerator-domain intent. Its nested `mode` fields use the same `hard` and `soft` vocabulary as `networkTopology.mode`.
 
 The names and annotation serialization below are proposed for API review. They make the ownership and validation surface concrete. The normal-Pod annotation is an explicit, documented compatibility API, not an additional policy model.
 
@@ -769,6 +770,18 @@ type XPUFabricAffinity struct {
     Mode XPUTopologyMode `json:"mode,omitempty"`
 }
 
+// SubGroupPolicySpec is the existing PodGroup subgroup API. XPUTopology adds
+// accelerator-domain intent for every Task selected into one matching SubJob.
+type SubGroupPolicySpec struct {
+    Name           string
+    SubGroupSize   *int32
+    MinSubGroups   *int32
+    LabelSelector  *metav1.LabelSelector
+    MatchLabelKeys []string
+    NetworkTopology *NetworkTopologySpec
+    XPUTopology     *XPUTopologySpec `json:"xpuTopology,omitempty"`
+}
+
 // XPUAllocationStrategy is an optional placement preference. It never changes
 // hard eligibility or bypasses normal Volcano scoring.
 type XPUAllocationStrategy string
@@ -787,9 +800,80 @@ For one requirement, exactly one selector is set:
 
 The resource and fabric `mode` fields accept `hard` or `soft`. `hard` is a filter and requires an allocation adapter that can enforce the selected device IDs: no matching healthy, enforceable topology means no placement. `soft` is a score only: a normal placement remains valid if no matching domain or exact-ID enforcement is available. `AllocationStrategy` accepts `Compact` or an omitted value. Compact is a preference, never a hard constraint. Omission adds no xPU-specific packing score.
 
-Fabric affinity is deliberately narrow in alpha. A policy that sets `fabric` must contain exactly one resource requirement. That requirement identifies the accelerator resource whose device domains must belong to one fabric selected for the entire gang plan. With `hard` mode, every placement in that plan must use a member Node and local domain of that same fabric. A later API may add an explicit fabric resource selector for multi-resource policies, but the alpha must reject that ambiguous case.
+Fabric affinity is deliberately narrow in alpha. A policy that sets `fabric` must contain exactly one resource requirement. That requirement identifies the accelerator resource whose device domains must belong to one fabric selected for the policy's complete scheduling unit: either the parent PodGroup gang unit or one SubJob. With `hard` mode, every placement in that unit must use a member Node and local domain of that same fabric. A later API may add an explicit fabric resource selector for multi-resource policies, but the alpha must reject that ambiguous case.
 
-All requirements on a Task are ANDed. For example, a Task requiring a same-domain GPU group and a hard fabric must satisfy both rules. A PodGroup with no `xpuTopology` field receives no topology-specific filter, score, plan, or reservation and follows the existing scheduler behavior.
+All requirements on a Task are ANDed. For example, a Task requiring a same-domain GPU group and a hard fabric must satisfy both rules. A PodGroup with neither a parent `xpuTopology` field nor a matching subgroup `xpuTopology` field receives no topology-specific filter, score, plan, or reservation and follows the existing scheduler behavior.
+
+#### Subgroup xPU Policy
+
+Volcano already converts every matching `subGroupPolicy` into a scheduler `SubJobInfo`. The xPU design reuses that existing unit: it does not create a parallel xPU subgroup, duplicate gang accounting, or introduce a second allocation loop. `subGroupSize` and `minSubGroups` retain their existing gang semantics; xPU plans devices only after the existing `allocate` action identifies the exact SubJob Task unit to admit.
+
+For a Volcano Job, `tasks[].partitionPolicy.xpuTopology` is the Job-facing representation. The Job controller copies it to the generated `PodGroup.spec.subGroupPolicy[].xpuTopology` together with the existing partition size, task selector, partition label key, and network topology fields. The batch API may use a package-local xPU type and convert it to the scheduling API type, just as it does for network topology.
+
+```yaml
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: partitioned-training
+spec:
+  schedulerName: volcano
+  minAvailable: 8
+  tasks:
+  - name: worker
+    replicas: 8
+    partitionPolicy:
+      totalPartitions: 2
+      partitionSize: 4
+      networkTopology:
+        mode: hard
+        highestTierAllowed: 1
+      xpuTopology:
+        resources:
+        - resource:
+            extendedResourceName: nvidia.com/gpu
+          mode: hard
+          allocationStrategy: Compact
+        fabric:
+          mode: hard
+    template:
+      spec:
+        containers:
+        - name: trainer
+          image: example/trainer:latest
+          resources:
+            requests:
+              nvidia.com/gpu: 1
+```
+
+The Job controller labels the first four worker Pods with one partition value and the remaining four with another, then creates two existing SubJobs. The xPU plugin plans one four-Pod SubJob at a time. The hard network rule limits that SubJob to its selected HyperNode candidate scope. The hard xPU rule requires every Pod to have an enforceable local-domain allocation; the hard fabric rule additionally requires all selected device domains in that one SubJob plan to belong to one declared fabric. A second SubJob receives a separate plan and reservation and may select another fitting fabric. A failed hard plan leaves only that SubJob pending and creates no reservation.
+
+For a direct PodGroup, users set the same field on a `subGroupPolicy` and use the existing label selector and match keys to define membership:
+
+```yaml
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: PodGroup
+metadata:
+  name: direct-partitioned-workers
+spec:
+  minMember: 8
+  subGroupPolicy:
+  - name: worker-partition
+    subGroupSize: 4
+    minSubGroups: 2
+    labelSelector:
+      matchLabels:
+        app: trainer
+    matchLabelKeys:
+    - training.example/partition
+    xpuTopology:
+      resources:
+      - resource:
+          extendedResourceName: nvidia.com/gpu
+        mode: hard
+        allocationStrategy: Compact
+```
+
+Normal controller-created Pods continue to support the documented parent-level `volcano.sh/xpu-topology` annotation. Subgroup xPU policy for those workloads requires a reviewed, documented serialization of the same typed `SubGroupPolicySpec` list plus stable workload labels. The alpha does not invent a second implicit annotation format; users who need subgroup xPU policy initially create the typed PodGroup directly or use a Volcano Job partition policy.
 
 #### Admission Webhook Validation
 
@@ -802,8 +886,9 @@ The webhook makes invalid intent fail at admission instead of becoming an ambigu
 5. Reject duplicate requirements targeting the same resource selector in one policy.
 6. Reject `claimName` in alpha. A later DRA-capable version will validate the alias at admission and resolve it against each Task Pod at runtime.
 7. Reject a policy that sets `fabric` with anything other than one resource requirement in alpha.
-8. Treat `xpuTopology` as create-only in alpha on both the Job and its scheduler-canonical PodGroup. Users create a new Job or controller rollout to change topology intent.
-9. Reject a non-empty `volcano.sh/xpu-topology` annotation unless the Pod uses `schedulerName: volcano`. Validate that the annotation decodes to the same schema as `XPUTopologySpec` and that every Pod in an automatically generated PodGroup resolves to the same normalized policy. The PodGroup controller must reject conflicting updates rather than overwriting an existing policy.
+8. Treat parent and subgroup `xpuTopology` as create-only in alpha on the Job, its scheduler-canonical PodGroup, and every `SubGroupPolicy`. Users create a new Job or controller rollout to change topology intent.
+9. For every subgroup `xpuTopology`, require a positive `subGroupSize` and a non-empty selector. Reject a PodGroup that sets both parent `xpuTopology` and any subgroup `xpuTopology` in alpha. The scheduler validates policy-compatible full-device requests after it observes the actual matching Tasks.
+10. Reject a non-empty `volcano.sh/xpu-topology` annotation unless the Pod uses `schedulerName: volcano`. Validate that the annotation decodes to the same schema as `XPUTopologySpec` and that every Pod in an automatically generated PodGroup resolves to the same normalized policy. The PodGroup controller must reject conflicting updates rather than overwriting an existing policy. It does not accept subgroup xPU policy through an undocumented annotation.
 
 The alpha makes this policy create-only because it is an input to filtering, scoring, gang planning, device reservation, and the selected-ID bind handoff. A Job, direct PodGroup, or a set of normal Pods can all produce the same canonical PodGroup policy. Ordinary Kubernetes object updates are not coordinated transactionally with an in-memory scheduling session or a live adapter reservation. For example, changing a hard fabric rule or resource selector after a session created its plan could make its reserved IDs and handoff inconsistent with the persisted policy, or leave one gang with mixed intent. A future mutable-policy API would need a versioned canonical policy, atomic propagation across workload sources, final reservation preflight against that version, and defined release/replan behavior. It is deliberately deferred rather than silently accepting unsafe updates.
 
@@ -1046,8 +1131,11 @@ The following Go-like contracts are illustrative. They make the proposed ownersh
 // GangPlanContext contains the immutable scheduling inputs used to build one
 // side-effect-free topology plan for the current gang admission unit.
 type GangPlanContext struct {
-    // Job owns the gang policy and current scheduler-visible task state.
+    // Job owns the current scheduler-visible task state.
     Job *api.JobInfo
+    // SubJob identifies the existing subgroup being admitted. It is nil only
+    // when the parent PodGroup itself is the scheduling unit.
+    SubJob *api.SubJobInfo
     // PlanTasks are exactly the pending Tasks the existing gang logic is
     // considering for this admission attempt.
     PlanTasks []*api.TaskInfo
@@ -1103,7 +1191,7 @@ func (p *xpuTopologyPlugin) OnSessionOpen(ssn *framework.Session) {
 }
 ```
 
-`allocate` invokes `GangPlanFn` only for an applicable hard-mode xPU PodGroup after normal candidate preparation. It first uses only pure plan candidates while normal allocation and any HyperNode trial Statements choose a gang-ready Task/Node set. After the winning trial Statement has been recovered, or after a non-trial Statement has tentatively allocated its gang plan unit, `allocate` invokes `GangPlanFn` again with `AssignedNodes` fixed to those selected placements. It then calls `TopologyReservationCoordinator.ReservePlan` for that final plan and registers the returned participant on the final Statement.
+`allocate` invokes `GangPlanFn` only for an applicable hard-mode xPU scheduling unit after normal candidate preparation. The unit is either the parent PodGroup gang unit or one existing SubJob created from `subGroupPolicy`; it is never a new xPU-only grouping. It first uses only pure plan candidates while normal allocation and any HyperNode trial Statements choose a gang-ready Task/Node set. After the winning trial Statement has been recovered, or after a non-trial Statement has tentatively allocated its gang plan unit, `allocate` invokes `GangPlanFn` again with `AssignedNodes` fixed to those selected placements. It then calls `TopologyReservationCoordinator.ReservePlan` for that final plan and registers the returned participant on the final Statement.
 
 Before recovering or creating a final Statement, `allocate` creates an allocation-attempt checkpoint. It owns cloned `JobWorksheet` and `SubJobWorksheet` queues, `NodesFitErrors`, SubJob allocation and nomination fields, and recorder decision state. The final attempt consumes only those clones. `Statement.Discard` still reverses session Task and Node operations, while the checkpoint restores every non-Statement mutation if final planning, reservation, preflight, batch preparation, or commit fails. Only a successful `CommitWithParticipants` adopts the cloned worksheets and recorder decision into the live allocation context. This prevents a failed first reservation attempt from silently dropping Tasks, retaining a stale HyperNode decision, or skipping a candidate during bounded replan.
 
@@ -1111,7 +1199,7 @@ Before recovering or creating a final Statement, `allocate` creates an allocatio
 
 #### Gang Planning Flow
 
-Per-Pod filtering cannot safely coordinate a gang: allocating the first Pod greedily may consume a domain needed by a later Pod. A hard xPU policy therefore triggers one bounded plan for the current PodGroup gang unit:
+Per-Pod filtering cannot safely coordinate a gang: allocating the first Pod greedily may consume a domain needed by a later Pod. A hard xPU policy therefore triggers one bounded plan for the current existing gang unit: the parent PodGroup or one SubJob selected through `subGroupPolicy`.
 
 ```mermaid
 flowchart TD
@@ -1197,6 +1285,10 @@ type TopologyContainerAssignment struct {
 type TopologyPlacementPlan struct {
     // JobID identifies the Job that owns the gang plan unit.
     JobID JobID
+    // SchedulingUnitID identifies the parent gang unit or existing SubJob that
+    // owns this reservation. It is part of the plan digest and prevents a
+    // handoff for one subgroup from being reused by another.
+    SchedulingUnitID string
     // Revision identifies the immutable topology snapshot used to make the
     // plan and is revalidated before reservation.
     Revision TopologyRevision
@@ -1211,7 +1303,7 @@ type TopologyPlacementPlan struct {
 
 Every container assignment sets exactly one of `ResourceName` or `ClaimName`. `PodUID`, `ContainerName`, and the selected resource or claim make the selected-ID handoff unambiguous across bind retries. `TopologyPlacementPlan.FabricID` records the one fabric that passed the alpha policy's single-resource fabric rule, and every placement must belong to it. The adapter rejects a plan whose Pod identity, resource or claim, container assignment, Node, domain, fabric, or device IDs no longer match the runtime request.
 
-`allocate` asks the plugin for one plan for the applicable PodGroup gang unit. After `ReservePlan` accepts the plan, the returned participant is attached to the same `Statement` that records task allocations. This requires a framework transaction change. The current `Statement.Commit` logs individual allocation errors and has no error result, so it cannot provide the required all-or-nothing pre-bind outcome. The proposed framework participant contract is deliberately small:
+`allocate` asks the plugin for one plan for the applicable parent PodGroup or SubJob gang unit. After `ReservePlan` accepts the plan, the returned participant is attached to the same `Statement` that records task allocations. This requires a framework transaction change. The current `Statement.Commit` logs individual allocation errors and has no error result, so it cannot provide the required all-or-nothing pre-bind outcome. The proposed framework participant contract is deliberately small:
 
 ```go
 // TransactionParticipant coordinates an external reservation with one
@@ -1370,13 +1462,14 @@ The following package layout keeps source parsing, reusable scheduler API types,
 | Test source | `pkg/scheduler/topology/provider/mock/` | Deterministic topology updates for unit and KWOK tests. |
 | Live state | `pkg/scheduler/cache/topology_cache.go`, `pkg/scheduler/cache/cache.go` | Keep provider facts, indexes, availability ledger, immutable topology-view publication, reservation states, and adapter recovery under `SchedulerCache.Mutex`. |
 | Cache integration | `pkg/scheduler/cache/cache.go`, `event_handlers.go`, `cache_mock.go`, `pkg/scheduler/api/cluster_info.go` | Initialize SchedulerCache topology state, serialize provider work per Node UID, enforce provider initial-sync readiness, process liveness heartbeats, defer live-device identity changes until release, attach the immutable xPU view to `ClusterInfo.Snapshot()`, and initialize test caches. |
+| SubJob integration | `pkg/scheduler/api/job_info.go`, `sub_job_info.go` | Copy the matching subgroup xPU policy into `SubJobInfo`, preserve existing subgroup membership and gang accounting, and identify the parent or SubJob scheduling unit in every plan digest and reservation. |
 | Session integration | `pkg/scheduler/framework/session.go`, `framework.go` | Keep the ordinary `SchedulerCache.Snapshot()` path, copy `ClusterInfo.XPUTopology` to `Session.XPUTopology`, and expose it to the xPU plugin before plugin initialization. |
 | Transaction integration | `pkg/scheduler/framework/statement.go`, proposed `topology_transaction.go`, `pkg/scheduler/cache/cache.go` | Keep gang-plan trials side-effect free, checkpoint allocation worksheets and recorder state, finalize and reserve only after the final Statement is recovered, add `CommitWithParticipants`, reservation participants, immutable `XPUTopologyHandoff` attachment, reversible batch prebind, rollback of every tentative mutation, and atomic bind-context batch handoff without changing existing `Statement.Commit()` callers. |
 | Plugin | `pkg/scheduler/plugins/xputopology/` | Policy resolution, domain-feasibility summary, predicate, score, gang planner, reservation participant, and tests. |
 | Allocation integration | `pkg/scheduler/actions/allocate/allocate.go` | Request one complete plan before tentative allocation of the applicable gang unit. |
 | Configuration | `pkg/scheduler/conf/volcano_features.go`, scheduler config/Helm values | Feature gate, plugin arguments, leader-election requirement for exact mode, replica consistency, hot-reload validation, and safe feature-drain validation. |
 | Annotation security | Helm manifests and admission-policy or webhook configuration | Dedicated publisher ServiceAccount, least-privilege Node RBAC, annotation-key write protection, and audit configuration. |
-| API, webhook, and PodGroup controller | scheduling API types, generated code, Job and PodGroup validation, `pkg/controllers/podgroup/pg_controller_handler.go` | Add typed `PodGroup.xpuTopology`, copy typed Job policy, parse and normalize normal-Pod xPU annotations into generated PodGroups, and reject malformed or conflicting policy updates. |
+| API, webhook, Job, and PodGroup controller | batch and scheduling API types, generated code, Job and PodGroup validation, `pkg/controllers/job/job_controller_actions.go`, `pkg/controllers/podgroup/pg_controller_handler.go` | Add typed parent and `SubGroupPolicy.xpuTopology` fields, copy a Job partition xPU policy into its generated subgroup policy, parse and normalize normal-Pod parent policies into generated PodGroups, and reject malformed, conflicting, or ambiguous parent-plus-subgroup policy updates. |
 
 The annotation-only milestone does **not** change the HyperNode CRD/controller, DRA cache setup, Device Plugin implementation, or existing device-specific APIs. It consumes existing Node events, and it may reference HyperNodes only through the existing scheduler session/cache view. A later topology-CRD provider would require new staged API types, generated clients/informers/deep-copies, manifests, and webhook validation, that work is intentionally not hidden in the alpha milestone.
 
@@ -1389,7 +1482,7 @@ The annotation-only milestone does **not** change the HyperNode CRD/controller, 
 | Locality | Hard/soft Node-local device domains and Compact preference. | Vendor-specific link bandwidth models and runtime/NCCL ring construction. |
 | Cross-Node | Mock/KWOK fabric domains with optional HyperNode intersection. | Real NVL72 validation and automatically inferred cross-Node fabrics. |
 | Enforcement | Mock/compatible exact adapter contract, otherwise soft-mode-only observation. | A production Device Plugin companion or DRA driver enforcement adapter. |
-| Transactions | Gang-plan reservation, error-returning `CommitWithParticipants` rollback integration, and batched bind-context handoff. | Atomic multi-Pod Kubernetes binding and topology-aware victim selection. |
+| Transactions | Parent-PodGroup and SubJob gang-plan reservation, error-returning `CommitWithParticipants` rollback integration, and batched bind-context handoff. | Atomic multi-Pod Kubernetes binding, hierarchical parent-plus-subgroup xPU composition, and topology-aware victim selection. |
 
 This boundary prevents the alpha feature from claiming exact accelerator assignment when the active provider or runtime cannot enforce selected IDs.
 
@@ -1433,7 +1526,7 @@ The implementation is phased as follows:
 
 | Phase | Deliverable |
 | --- | --- |
-| 1 | Typed Job and PodGroup policy API, normal-Pod annotation parsing and generated-PodGroup conversion, fail-closed policy validation, canonical types/cache, feature-gate and plugin configuration validation including leader-election and safe feature-drain validation, Node-inventory annotation/mock provider, ordered Node UID updates, liveness refresh, explicit fabric ownership and member identity, immutable indexes, and unit tests. |
+| 1 | Typed Job, PodGroup, and SubGroup policy API, Job partition-to-subgroup policy conversion, normal-Pod parent-policy annotation parsing and generated-PodGroup conversion, fail-closed policy validation, canonical types/cache, feature-gate and plugin configuration validation including leader-election and safe feature-drain validation, Node-inventory annotation/mock provider, ordered Node UID updates, liveness refresh, explicit fabric ownership and member identity, immutable indexes, and unit tests. |
 | 2 | One `SchedulerCache` snapshot carrying Node, HyperNode, and immutable xPU topology views; reviewed domain-summary integration for HyperNode and Node selection; hard/soft local-domain filtering; compact scoring; fit reasons; immutable policy validation; and disabled-feature regressions. |
 | 3 | Gang-plan units, allocation-attempt checkpoints, linked ledger and adapter reservations, reservation lifecycle, `CommitWithParticipants`, reversible batch prebind and bind-context batch handoff, failure injection, leader-handoff recovery, and concurrency tests. |
 | 4 | Mock/KWOK cross-Node fabric and HyperNode intersection, E2E scenarios, benchmarks, operational metrics, and user documentation. |
@@ -1442,7 +1535,7 @@ Production DRA and Device Plugin companion adapters are follow-up work. The init
 
 ### Validation Plan
 
-Unit tests cover schema validation, source-generation ordering and reuse, effective freshness deadlines and invalid timestamps, stable identity, stale/conflicting updates, delayed `ClearFacts` after a newer replace, Node deletion and removal from scheduler scope, fabric ownership conflicts, live-device topology changes deferred until release, allocation/release/health reconciliation, preemption-driven release and missing-release reconciliation, adapter recovery after restart, one `SchedulerCache.Snapshot()` carrying consistent Node, HyperNode, and xPU topology views, typed Job and direct PodGroup policy propagation, normal-Pod annotation parsing and generated-PodGroup conversion, rejection of a policy annotation on a non-Volcano Pod, conflicting annotations in one generated PodGroup, omitted and compact strategy ordering, immutable policy rejection, fail-closed gate and plugin configuration validation including disabled-feature refusal with persisted policies, alpha fabric single-resource validation, one-common-fabric gang plans, alpha unsupported Pod request rejection, DRA-selector rejection, selected-ID handoff identity and rollback, adapter-provider identity contract validation, `minAvailable` gang-plan units with later allocation waves, normal-resource shadow planning, dry-run plan finalization without reservations, search-state budget exhaustion, adapter-reservation compensation, gang rollback, bind-context batch failure, reservation confirmation timeout, and reservation conflicts.
+Unit tests cover schema validation, source-generation ordering and reuse, effective freshness deadlines and invalid timestamps, stable identity, stale/conflicting updates, delayed `ClearFacts` after a newer replace, Node deletion and removal from scheduler scope, fabric ownership conflicts, live-device topology changes deferred until release, allocation/release/health reconciliation, preemption-driven release and missing-release reconciliation, adapter recovery after restart, one `SchedulerCache.Snapshot()` carrying consistent Node, HyperNode, and xPU topology views, typed Job, direct PodGroup, and subgroup policy propagation, Job partition-to-SubJob xPU conversion, normal-Pod annotation parsing and generated-PodGroup conversion, rejection of a policy annotation on a non-Volcano Pod, conflicting annotations in one generated PodGroup, omitted and compact strategy ordering, immutable policy rejection, parent-plus-subgroup policy rejection, fail-closed gate and plugin configuration validation including disabled-feature refusal with persisted policies, alpha fabric single-resource validation, one-common-fabric gang plans, alpha unsupported Pod request rejection, DRA-selector rejection, selected-ID handoff identity and rollback, adapter-provider identity contract validation, `minAvailable` gang-plan units with later allocation waves, normal-resource shadow planning, dry-run plan finalization without reservations, search-state budget exhaustion, adapter-reservation compensation, gang rollback, bind-context batch failure, reservation confirmation timeout, and reservation conflicts.
 
 Additional regression tests prove that metadata-only provider heartbeats renew freshness without accepting changed topology content, a Node replacement with the same name starts `Pending`, and a fabric cannot revive until its owner republishes membership for replacement Node UIDs or generations. They also prove that a failed final reservation restores every worksheet, fit-error, nomination, and recorder decision before the next plan attempt, a batch prebind failure dispatches no member, a leader promotion completes recovery before hard scheduling, and an unsafe watched configuration reload keeps the prior configuration active.
 
@@ -1457,7 +1550,8 @@ KWOK E2E tests cover:
 7. annotation writes accepted only from the configured publisher identity, and
 8. a member Node leaving the scheduler scope or an owner Node deletion makes the affected fabric unavailable, and
 9. a `minAvailable` gang unit reserves only its admitted Tasks, while later Tasks receive a separate plan, and
-10. a Deployment or StatefulSet Pod template with `schedulerName: volcano`, `volcano.sh/group-min-member`, and `volcano.sh/xpu-topology` produces an equivalent PodGroup policy and gang plan.
+10. a Volcano Job partition creates independent SubJob xPU plans and reservations without mixing their device IDs or fabric selections, and
+11. a Deployment or StatefulSet Pod template with `schedulerName: volcano`, `volcano.sh/group-min-member`, and `volcano.sh/xpu-topology` produces an equivalent parent PodGroup policy and gang plan.
 
 Scale benchmarks simulate dense devices, fragmented capacity, large fabric sets, concurrent gangs, and high provider-update rates. User documentation will describe feature configuration, provider schema, enforcement guarantees, failure reasons, and troubleshooting. Once the API is accepted, the user-facing documentation will also be published through the `volcano-sh/website` repository.
 
