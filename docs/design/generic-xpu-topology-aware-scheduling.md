@@ -633,7 +633,7 @@ metadata:
 spec:
   schedulerName: volcano
   xpuTopology:
-    resources:
+    requirements:
     - resource:
         extendedResourceName: nvidia.com/gpu
       mode: hard
@@ -664,7 +664,7 @@ metadata:
 spec:
   minMember: 2
   xpuTopology:
-    resources:
+    requirements:
     - resource:
         extendedResourceName: nvidia.com/gpu
       mode: hard
@@ -682,7 +682,7 @@ metadata:
   name: single-trainer
   annotations:
     volcano.sh/xpu-topology: >-
-      {"resources":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
+      {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
 spec:
   schedulerName: volcano
   containers:
@@ -709,7 +709,7 @@ spec:
       annotations:
         volcano.sh/group-min-member: "8"
         volcano.sh/xpu-topology: >-
-          {"resources":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
+          {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
     spec:
       schedulerName: volcano
       containers:
@@ -727,7 +727,7 @@ The same template form works for Deployments, StatefulSets, ReplicaSets, Kuberne
 ```yaml
 spec:
   xpuTopology:
-    resources:
+    requirements:
     - resource:
         claimName: accelerator
       mode: soft
@@ -751,8 +751,8 @@ The names and annotation serialization below are proposed for API review. They m
 
 ```go
 type XPUTopologySpec struct {
-    Resources []XPUResourceTopologyRequirement `json:"resources,omitempty"`
-    Fabric    *XPUFabricAffinity               `json:"fabric,omitempty"`
+    Requirements []XPUResourceTopologyRequirement `json:"requirements,omitempty"`
+    Fabric       *XPUFabricAffinity               `json:"fabric,omitempty"`
 }
 
 type XPUResourceTopologyRequirement struct {
@@ -828,7 +828,7 @@ spec:
         mode: hard
         highestTierAllowed: 1
       xpuTopology:
-        resources:
+        requirements:
         - resource:
             extendedResourceName: nvidia.com/gpu
           mode: hard
@@ -866,7 +866,7 @@ spec:
     matchLabelKeys:
     - training.example/partition
     xpuTopology:
-      resources:
+      requirements:
       - resource:
           extendedResourceName: nvidia.com/gpu
         mode: hard
