@@ -607,7 +607,7 @@ eligible task-node pair = normal Kubernetes/Volcano resource fit
 
 `Statement.Allocate` remains responsible for normal `NodeInfo` resource accounting. The topology ledger reserves device identity only, it must not subtract the same extended resource from `NodeInfo` a second time. For extended-resource providers, published whole-device capacity may not exceed matching Node allocatable capacity. DRA providers perform the equivalent consistency check using ResourceSlice/claim semantics. A disagreement blocks hard scheduling and removes topology preference for soft scheduling until reconciliation succeeds.
 
-Normal Volcano resource fit continues to use the Kubernetes-compatible effective Pod request. The exact xPU alpha deliberately has a narrower input shape so the selected-ID handoff is unambiguous: each planned Pod must request the selected extended resource as an integral whole-device quantity from exactly one regular container. The alpha rejects the resource in init containers, restartable init sidecars, or multiple regular containers. It also rejects a PodGroup whose planned Tasks do not all satisfy this shape for every declared xPU resource. This avoids silently assigning or reusing IDs across container lifecycle phases. A later API may add explicit per-task and per-container targeting once its allocation and lifecycle semantics are designed.
+Normal Volcano resource fit continues to use the Kubernetes-compatible effective Pod request. The exact xPU alpha deliberately has a narrower input shape so the selected-ID handoff is unambiguous: each Task selected by a device requirement must request that extended resource as an integral whole-device quantity from exactly one regular container. The alpha rejects the resource in init containers, restartable init sidecars, or multiple regular containers. Tasks that do not request a requirement's resource remain in normal gang and resource scheduling but do not receive a topology assignment for that requirement. This avoids silently assigning or reusing IDs across container lifecycle phases. A later API may add explicit per-task and per-container targeting once its allocation and lifecycle semantics are designed.
 
 Provider fields describing shared memory, cores, virtual-device count, MIG, or other vendor geometry must not be silently converted into a whole-device record.
 
@@ -621,7 +621,7 @@ xPU topology scheduling applies only to Pods whose `spec.schedulerName` is `volc
 
 This lets Deployments, StatefulSets, and other controllers use whole-PodGroup xPU topology scheduling by setting `schedulerName: volcano` and the device-topology annotation in their Pod template. `volcano.sh/group-min-member` defines the gang size when such a workload needs gang-wide xPU planning. A workload without that annotation still receives the existing Volcano scheduling behavior.
 
-The alpha policy applies uniformly to its scheduling unit: the complete PodGroup for `spec.deviceTopology`, or one matching SubJob for `subGroupPolicy[].deviceTopology`. Every Task admitted under that policy must resolve every declared extended-resource requirement to exactly one regular container with an integral whole-device request. A Task that does not request that resource is not silently skipped, it makes its policy unit ineligible with `XPUTopologyUnsupportedPodRequest`. A parent `deviceTopology` policy and any subgroup `deviceTopology` policy are mutually exclusive in alpha. This avoids ambiguous fabric scope and inheritance. Heterogeneous accelerator Task templates, init-container accelerator requests, per-container policy targeting, and hierarchical parent-plus-subgroup xPU composition are deferred because they require explicit inheritance and allocation-lifecycle semantics. Exact API names and versions require API review. The following examples are illustrative.
+The policy unit is the complete PodGroup for `spec.deviceTopology`, or one matching SubJob for `subGroupPolicy[].deviceTopology`. Each device requirement selects only the Tasks in that unit that request its declared resource. The remaining Tasks continue through normal gang and resource scheduling; this selection is explicit policy semantics, not silent skipping. Every selected Task must resolve the resource request to exactly one regular container with an integral whole-device quantity. A selected Task with an unsupported request shape makes its policy unit ineligible with `XPUTopologyUnsupportedPodRequest`. A requirement that selects no Tasks is rejected before scheduling. A parent `deviceTopology` policy and any subgroup `deviceTopology` policy are mutually exclusive in alpha. This avoids ambiguous fabric scope and inheritance. Heterogeneous accelerator Task templates, init-container accelerator requests, per-container policy targeting, and hierarchical parent-plus-subgroup xPU composition are deferred because they require explicit inheritance and allocation-lifecycle semantics. Exact API names and versions require API review. The following examples are illustrative.
 
 **Volcano Job:**
 
@@ -786,11 +786,11 @@ For one requirement, exactly one selector is set:
 - `extendedResourceName` identifies a full-device Kubernetes extended resource, such as `nvidia.com/gpu`.
 - `claimName` identifies the Pod `resourceClaims` alias for a future DRA-backed workload. It is not accepted in alpha.
 
-The resource and fabric `mode` fields accept `hard` or `soft`. `hard` is a filter and requires an allocation adapter that can enforce the selected device IDs: no matching healthy, enforceable topology means no placement. `soft` is a score only: a normal placement remains valid if no matching domain or exact-ID enforcement is available.
+The resource and fabric `mode` fields accept `hard` or `soft`. Each resource requirement selects the Tasks in its policy unit that request its declared resource; a Task that requests multiple declared resources must satisfy every requirement that selects it. `hard` is a filter and requires an allocation adapter that can enforce the selected device IDs: no matching healthy, enforceable topology means no placement. `soft` is a score only: a normal placement remains valid if no matching domain or exact-ID enforcement is available.
 
-Fabric affinity is deliberately narrow in alpha. A policy that sets `fabric` must contain exactly one resource requirement. That requirement identifies the accelerator resource whose device domains must belong to one fabric selected for the policy's complete scheduling unit: either the parent PodGroup gang unit or one SubJob. With `hard` mode, every placement in that unit must use a member Node and local domain of that same fabric. A later API may add an explicit fabric resource selector for multi-resource policies, but the alpha must reject that ambiguous case.
+Fabric affinity is deliberately narrow in alpha. A policy that sets `fabric` must contain exactly one resource requirement. That requirement identifies the accelerator resource whose device domains must belong to one fabric selected for the policy's complete scheduling unit: either the parent PodGroup gang unit or one SubJob. With `hard` mode, every topology placement selected by that requirement must use a member Node and local domain of that same fabric. A later API may add an explicit fabric resource selector for multi-resource policies, but the alpha must reject that ambiguous case.
 
-All requirements on a Task are ANDed. For example, a Task requiring a same-domain GPU group and a hard fabric must satisfy both rules. A PodGroup with neither a parent `deviceTopology` field nor a matching subgroup `deviceTopology` field receives no topology-specific filter, score, plan, or reservation and follows the existing scheduler behavior.
+All requirements that select a Task are ANDed. For example, a Task requiring a same-domain GPU group and a hard fabric must satisfy both rules. A Task that does not request a requirement's resource is not selected by that requirement. A PodGroup with neither a parent `deviceTopology` field nor a matching subgroup `deviceTopology` field receives no topology-specific filter, score, plan, or reservation and follows the existing scheduler behavior.
 
 #### Subgroup Device Policy
 
@@ -873,7 +873,7 @@ The webhook makes invalid intent fail at admission instead of becoming an ambigu
 6. Reject `claimName` in alpha. A later DRA-capable version will validate the alias at admission and resolve it against each Task Pod at runtime.
 7. Reject a policy that sets `fabric` with anything other than one resource requirement in alpha.
 8. Treat parent and subgroup `deviceTopology` as create-only in alpha on the Job, its scheduler-canonical PodGroup, and every `SubGroupPolicy`. Users create a new Job or controller rollout to change topology intent.
-9. For every subgroup `deviceTopology`, require a positive `subGroupSize` and a non-empty selector. Reject a PodGroup that sets both parent `deviceTopology` and any subgroup `deviceTopology` in alpha. The scheduler validates policy-compatible full-device requests after it observes the actual matching Tasks.
+9. For every subgroup `deviceTopology`, require a positive `subGroupSize` and a non-empty selector. Reject a PodGroup that sets both parent `deviceTopology` and any subgroup `deviceTopology` in alpha. Reject each resource requirement when no Task in its policy unit requests that resource. The Job webhook performs this check from Job Task templates; for a direct PodGroup or controller-created Pods, the PodGroup controller performs the same validation when it resolves membership, and the scheduler repeats it before planning. The scheduler validates the whole-device request shape for every selected Task.
 10. Reject a non-empty `volcano.sh/device-topology` annotation unless the Pod uses `schedulerName: volcano`. Validate that the annotation decodes to the same schema as `DeviceTopologySpec` and that every Pod in an automatically generated PodGroup resolves to the same normalized policy. The PodGroup controller must reject conflicting updates rather than overwriting an existing policy. It does not accept subgroup device policy through an undocumented annotation.
 
 The alpha makes this policy create-only because it is an input to filtering, scoring, gang planning, device reservation, and the selected-ID bind handoff. A Job, direct PodGroup, or a set of normal Pods can all produce the same canonical PodGroup policy. Ordinary Kubernetes object updates are not coordinated transactionally with an in-memory scheduling session or a live adapter reservation. For example, changing a hard fabric rule or resource selector after a session created its plan could make its reserved IDs and handoff inconsistent with the persisted policy, or leave one gang with mixed intent. A future mutable-policy API would need a versioned canonical policy, atomic propagation across workload sources, final reservation preflight against that version, and defined release/replan behavior. It is deliberately deferred rather than silently accepting unsafe updates.
@@ -1136,11 +1136,12 @@ type GangPlanContext struct {
     AssignedNodes map[api.TaskID]*api.NodeInfo
 }
 
-// GangPlan exposes the selected topology placement for every Task in the
-// admission unit. It carries no reservation or backend allocation state.
+// GangPlan exposes the selected topology placement for every device-requesting
+// Task in the admission unit. It carries no reservation or backend allocation
+// state.
 type GangPlan interface {
     // TaskPlacements returns the selected Node, domain, and device IDs for
-    // every Task covered by this complete plan.
+    // every device-requesting Task covered by this complete plan.
     TaskPlacements() []TopologyTaskPlacement
 }
 
@@ -1159,13 +1160,13 @@ type TopologyReservationCoordinator interface {
 }
 ```
 
-The gang plan unit is the exact set of pending Tasks that the existing gang logic is about to admit in one `Statement`. It is not automatically every Job replica. For example, when a Job has ten replicas and `minAvailable: 4`, the first unit contains the four Tasks needed for the current gang admission. Later pending Tasks receive a new plan unit when the normal allocate and gang logic selects them. A plan must cover every Task in its unit or allocate none of them.
+The gang plan unit is the exact set of pending Tasks that the existing gang logic is about to admit in one `Statement`. It is not automatically every Job replica. For example, when a Job has ten replicas and `minAvailable: 4`, the first unit contains the four Tasks needed for the current gang admission. Later pending Tasks receive a new plan unit when the normal allocate and gang logic selects them. The normal Statement still covers every Task in this unit; the topology plan must cover every Task in it that is selected by a device requirement, or allocate none of them.
 
 `CandidateNodes` contains only Nodes that already passed normal scheduler predicates and any applicable Queue, NodeShard, and HyperNode/network scope. When the reviewed early integration is available, this candidate selection also consumes the read-only xPU domain-feasibility summary. A gang plan therefore cannot expand the candidate set or bypass existing scheduling policy.
 
 `NodeResourceState` contains plan-owned clones of the session Nodes. As the planner assigns each Task, it applies the same normal `NodeInfo.AddTask` resource accounting to the clone before accepting that placement. This prevents a plan from placing two Tasks on a Node that each fit individually but do not fit together. The final `Statement` preflight repeats the check against current session state before reservation commit. If that preflight fails because state changed, the planner retries a bounded alternative plan rather than repeatedly reserving the same invalid placement.
 
-The xPU implementation returns selected `TopologyTaskPlacement` values only when it can plan every Task in the unit. A provisional plan may be evaluated during normal or HyperNode trial placement, but it contains no reservation, adapter token, or mutable transaction participant.
+The xPU implementation returns `TopologyTaskPlacement` values only when it can plan every device-requesting Task selected from the unit. A provisional plan may be evaluated during normal or HyperNode trial placement, but it contains no reservation, adapter token, or mutable transaction participant.
 
 The plugin continues to use existing callbacks for per-Task work and registers the proposed planning callback at session open:
 
@@ -1281,8 +1282,8 @@ type TopologyPlacementPlan struct {
     // FabricID identifies the one selected fabric. It is empty when fabric
     // affinity is not used.
     FabricID FabricDomainID
-    // Placements covers every Task in the gang plan unit or the plan is
-    // rejected as incomplete.
+    // Placements covers every device-requesting Task selected from the gang
+    // plan unit or the plan is rejected as incomplete.
     Placements []TopologyTaskPlacement
 }
 ```
