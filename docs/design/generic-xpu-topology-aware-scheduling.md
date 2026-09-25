@@ -107,7 +107,7 @@ Free devices on ordinary Nodes must not be treated as one shared xPU domain. A D
 
 1. Make physical device domains and availability visible before binding.
 2. Support hard and soft local-domain and fabric affinity.
-3. Prefer compact allocations that avoid avoidable device fragmentation.
+3. Preserve administrator-configured placement preferences after topology eligibility is satisfied.
 4. Plan and reserve all devices for a gang unit before any Pod in that plan binds.
 5. Keep provider parsing independent from scheduling policy and enforcement.
 6. Reconcile device health, allocation, reservation, release, and restart state.
@@ -637,7 +637,6 @@ spec:
     - resource:
         extendedResourceName: nvidia.com/gpu
       mode: hard
-      allocationStrategy: Compact
   minAvailable: 1
   tasks:
   - name: worker
@@ -668,7 +667,6 @@ spec:
     - resource:
         extendedResourceName: nvidia.com/gpu
       mode: hard
-      allocationStrategy: Compact
 ```
 
 A user who manages Pods and the PodGroup directly sets the same typed policy on the PodGroup.
@@ -682,7 +680,7 @@ metadata:
   name: single-trainer
   annotations:
     volcano.sh/device-topology: >-
-      {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
+      {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard"}]}
 spec:
   schedulerName: volcano
   containers:
@@ -709,7 +707,7 @@ spec:
       annotations:
         volcano.sh/group-min-member: "8"
         volcano.sh/device-topology: >-
-          {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
+          {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard"}]}
     spec:
       schedulerName: volcano
       containers:
@@ -739,13 +737,13 @@ The alpha webhook rejects `claimName` requirements. This avoids accepting an API
 
 > **Alpha limitation:** The DRA example above describes the proposed future API only. It is rejected by the initial implementation.
 
-Defaults are conservative: omitted local-domain affinity means no same-domain constraint, omitted fabric means no fabric constraint, and an omitted `allocationStrategy` adds no xPU-specific packing preference. Hard constraints still apply when configured; the scheduler otherwise uses normal Node ordering and a deterministic topology tie-break. Workloads never name device, domain, fabric, or vendor identifiers.
+Defaults are conservative: omitted local-domain affinity means no same-domain constraint, and omitted fabric means no fabric constraint. `deviceTopology` does not expose a per-workload packing or spreading choice. Hard constraints still apply when configured; the scheduler otherwise uses normal administrator-configured Node ordering and a deterministic topology tie-break. Workloads never name device, domain, fabric, or vendor identifiers.
 
 The webhook validates feature-gate use, one resource selector per requirement, and recognized values. It cannot prove that a runtime adapter can enforce selected IDs, the scheduler rejects a hard request with an explicit reason when no compatible adapter is active.
 
 #### Proposed API Types and Semantics
 
-`deviceTopology` is an optional typed field on `JobSpec`, `PodGroupSpec`, and `SubGroupPolicySpec`. For normal Volcano-scheduled Pods, `volcano.sh/device-topology` is the documented serialized form of the parent-level type and is converted to the generated `PodGroupSpec` field by the PodGroup controller. The scheduler reads only typed PodGroup and subgroup forms. It does not replace existing `networkTopology`, `subGroupPolicy`, Pod `affinity`, or Pod `topologySpreadConstraints`. Those fields continue to express accelerator-domain intent. `deviceTopology` expresses only accelerator-domain intent. Its nested `mode` fields use the same `hard` and `soft` vocabulary as `networkTopology.mode`.
+`deviceTopology` is an optional typed field on `JobSpec`, `PodGroupSpec`, and `SubGroupPolicySpec`. For normal Volcano-scheduled Pods, `volcano.sh/device-topology` is the documented serialized form of the parent-level type and is converted to the generated `PodGroupSpec` field by the PodGroup controller. The scheduler reads only typed PodGroup and subgroup forms. It does not replace existing `networkTopology`, `subGroupPolicy`, Pod `affinity`, or Pod `topologySpreadConstraints`. Those fields continue to express network placement, group membership, and ordinary Kubernetes Pod placement. `deviceTopology` expresses only accelerator-domain intent. Its nested `mode` fields use the same `hard` and `soft` vocabulary as `networkTopology.mode`.
 
 The names and annotation serialization below are proposed for API review. They make the ownership and validation surface concrete. The normal-Pod annotation is an explicit, documented compatibility API, not an additional policy model.
 
@@ -756,9 +754,8 @@ type DeviceTopologySpec struct {
 }
 
 type DeviceTopologyRequirement struct {
-    Resource           DeviceResourceSelector   `json:"resource"`
-    Mode               DeviceTopologyMode       `json:"mode,omitempty"`
-    AllocationStrategy DeviceAllocationStrategy `json:"allocationStrategy,omitempty"`
+    Resource DeviceResourceSelector `json:"resource"`
+    Mode     DeviceTopologyMode     `json:"mode,omitempty"`
 }
 
 type DeviceResourceSelector struct {
@@ -782,15 +779,6 @@ type SubGroupPolicySpec struct {
     DeviceTopology  *DeviceTopologySpec `json:"deviceTopology,omitempty"`
 }
 
-// DeviceAllocationStrategy is an optional placement preference. It never changes
-// hard eligibility or bypasses normal Volcano scoring.
-type DeviceAllocationStrategy string
-
-const (
-    // DeviceAllocationStrategyCompact prefers packing placements into the
-    // smallest fitting domains to preserve other domains.
-    DeviceAllocationStrategyCompact DeviceAllocationStrategy = "Compact"
-)
 ```
 
 For one requirement, exactly one selector is set:
@@ -798,7 +786,7 @@ For one requirement, exactly one selector is set:
 - `extendedResourceName` identifies a full-device Kubernetes extended resource, such as `nvidia.com/gpu`.
 - `claimName` identifies the Pod `resourceClaims` alias for a future DRA-backed workload. It is not accepted in alpha.
 
-The resource and fabric `mode` fields accept `hard` or `soft`. `hard` is a filter and requires an allocation adapter that can enforce the selected device IDs: no matching healthy, enforceable topology means no placement. `soft` is a score only: a normal placement remains valid if no matching domain or exact-ID enforcement is available. `AllocationStrategy` accepts `Compact` or an omitted value. Compact is a preference, never a hard constraint. Omission adds no xPU-specific packing score.
+The resource and fabric `mode` fields accept `hard` or `soft`. `hard` is a filter and requires an allocation adapter that can enforce the selected device IDs: no matching healthy, enforceable topology means no placement. `soft` is a score only: a normal placement remains valid if no matching domain or exact-ID enforcement is available.
 
 Fabric affinity is deliberately narrow in alpha. A policy that sets `fabric` must contain exactly one resource requirement. That requirement identifies the accelerator resource whose device domains must belong to one fabric selected for the policy's complete scheduling unit: either the parent PodGroup gang unit or one SubJob. With `hard` mode, every placement in that unit must use a member Node and local domain of that same fabric. A later API may add an explicit fabric resource selector for multi-resource policies, but the alpha must reject that ambiguous case.
 
@@ -832,7 +820,6 @@ spec:
         - resource:
             extendedResourceName: nvidia.com/gpu
           mode: hard
-          allocationStrategy: Compact
         fabric:
           mode: hard
     template:
@@ -870,7 +857,6 @@ spec:
       - resource:
           extendedResourceName: nvidia.com/gpu
         mode: hard
-        allocationStrategy: Compact
 ```
 
 Normal controller-created Pods continue to support the documented parent-level `volcano.sh/device-topology` annotation. Subgroup device policy for those workloads requires a reviewed, documented serialization of the same typed `SubGroupPolicySpec` list plus stable workload labels. The alpha does not invent a second implicit annotation format; users who need subgroup device policy initially create the typed PodGroup directly or use a Volcano Job partition policy.
@@ -882,7 +868,7 @@ The webhook makes invalid intent fail at admission instead of becoming an ambigu
 1. Reject a non-empty `deviceTopology` policy unless `XPUTopologyAwareScheduling` is enabled.
 2. Require at least one resource requirement and exactly one of `extendedResourceName` or `claimName` in each requirement.
 3. Require a valid extended resource name. Reject CPU and memory because the first scope is full accelerator devices, not CPU/NUMA topology.
-4. Accept only `hard` or `soft` mode and `Compact` as the initial allocation strategy.
+4. Accept only `hard` or `soft` mode. Reject unknown fields, including a per-workload packing or spreading strategy.
 5. Reject duplicate requirements targeting the same resource selector in one policy.
 6. Reject `claimName` in alpha. A later DRA-capable version will validate the alias at admission and resolve it against each Task Pod at runtime.
 7. Reject a policy that sets `fabric` with anything other than one resource requirement in alpha.
@@ -1039,11 +1025,11 @@ At session open, the plugin reads the immutable xPU topology view included in `C
 | --- | --- | --- |
 | Candidate preparation | Proposed reviewed framework integration | After Queue, gang, and NodeShard scope is known, exposes a read-only domain-feasibility summary to existing HyperNode and Node selection. For hard mode, it removes only Nodes proven to have no fitting domain. For soft mode, it removes no Nodes. |
 | Filter | `Session.AddPredicateFn` | Rejects a Node when hard local-domain/fabric, freshness, health, or enforcement conditions fail. |
-| Score | `Session.AddNodeOrderFn` or `AddBatchNodeOrderFn` | Adds soft-mode affinity and compact-placement scores after normal eligibility. |
+| Score | `Session.AddNodeOrderFn` or `AddBatchNodeOrderFn` | Adds soft-mode topology-affinity scores after normal eligibility. |
 | Gang plan | New framework-owned `GangPlan` hook in `allocate`. | Produces a side-effect-free plan candidate for all Tasks in the unit. |
 | Commit/Discard | Proposed `Statement` transaction participant. | Keeps or rolls back topology reservations with the existing tentative allocation. |
 
-For `Compact`, the plugin prefers an exact domain fit, then the smallest domain that fits, before applying existing Node and HyperNode scores. An omitted strategy adds no xPU-specific packing preference. Compact is never a hard constraint by itself.
+The plugin uses a deterministic topology tie-break after existing Node and HyperNode scores. Existing administrator-configured Node-order plugins, such as binpack, retain ownership of packing and spreading policy.
 
 #### Plugin Responsibilities and Boundaries
 
@@ -1054,7 +1040,7 @@ For `Compact`, the plugin prefers an exact domain fit, then the smallest domain 
 | Request preparation | Resolve the PodGroup policy and its Pod resource or claim selector. | Webhook validates the policy, predicates resolves standard Pod feasibility. |
 | Candidate preparation | After Queue, gang, and NodeShard scope is known, publish a read-only domain-feasibility summary to existing HyperNode and Node selection. The summary contains no reservation or final device assignment. For hard mode, it removes only Nodes proven to have no fitting domain. For soft mode, it removes no Nodes. | HyperNode and Node selection retain ownership of network candidate construction. The integration method requires framework review. |
 | Predicate | Check that a candidate Node has a current, healthy, enforceable local domain and, when required, belongs to the selected fabric. | `predicates` and normal Node resource accounting. |
-| Node ordering | Prefer matching fabric/locality and compact, less-fragmented domains. | Existing nodeorder and network-topology-aware scores continue to participate. |
+| Node ordering | Prefer matching fabric and locality for soft mode. | Existing Node-order and network-topology-aware scores continue to participate and retain packing/spreading policy. |
 | Gang planning | Select all Nodes, local domains, and device IDs for the plan unit. | `allocate` continues to control task allocation order and gang readiness. |
 | Reservation | Atomically reserve topology IDs and attach the reservation to the current transaction. | `Statement` remains the owner of normal task/Node mutation. |
 | Reconciliation | Observe authoritative allocation/release/health updates and update the ledger. | Provider/adapter source remains authoritative for device state. |
@@ -1092,7 +1078,7 @@ flowchart TB
     Q[Queue, gang, NodeShard, HyperNode and Node candidate selection]
     P[Existing Node predicates]
     XPF[xpu-topology-aware exact feasibility recheck]
-    S[Node scoring: existing plugins + xPU soft/compact score]
+    S[Node scoring: existing plugins + xPU soft-affinity score]
     GP[Pure hard-mode gang-plan candidate]
     ST[Statement.Allocate tentative task operations]
     C{Gang plan unit ready?}
@@ -1121,7 +1107,7 @@ Current `HyperNodeGradientForJobFn` and `HyperNodeGradientForSubJobFn` use the f
 
 Group topology affinity is a proposed HyperNode-level capability and is not implemented yet. If introduced, it must use an explicit framework-defined composition of HyperNode candidate scopes. It can consume the same read-only xPU domain-feasibility summary, rather than requiring xPU to register a competing gradient callback.
 
-Hard xPU requirements are evaluated before topology preference. A hard local-domain or fabric failure produces a structured xPU fit error and is not converted to a low score. Soft local-domain/fabric and Compact rules contribute scores only after normal eligibility. The first alpha implementation should use the existing predicate and Node-order callback mechanisms, any new gang-planning callback requires explicit framework review rather than hidden logic in a single plugin.
+Hard xPU requirements are evaluated before topology preference. A hard local-domain or fabric failure produces a structured xPU fit error and is not converted to a low score. Soft local-domain and fabric rules contribute scores only after normal eligibility. The first alpha implementation should use the existing predicate and Node-order callback mechanisms, any new gang-planning callback requires explicit framework review rather than hidden logic in a single plugin.
 
 #### Proposed Plugin and GangPlan Contracts
 
@@ -1222,7 +1208,7 @@ flowchart TD
     class Pending wait
 ```
 
-The planner orders tasks by fewest candidate domains, then largest device request, then existing task order. For a hard fabric policy, it chooses one common Fabric ID before assigning any Task and evaluates only that fabric's member Nodes and domains for the whole unit. `Compact` tries exact and smaller fitting domains first; omission uses deterministic ID order. It uses backtracking only when this greedy placement cannot complete the unit, and every expanded placement state consumes the configured `maxSearchStates` budget. It also enforces `maxCandidateDomainsPerTask`, `maxPlanningAttempts`, and a planning deadline. Budget exhaustion returns `XPUTopologyPlanningBudgetExceeded`, creates no reservation, and is retryable planning pressure rather than a false `NotEnoughResources` result. The planner never bypasses queue, gang, priority, preemption, NodeShard, or network-topology checks.
+The planner orders tasks by fewest candidate domains, then largest device request, then existing task order. For a hard fabric policy, it chooses one common Fabric ID before assigning any Task and evaluates only that fabric's member Nodes and domains for the whole unit. It breaks topology ties by stable ID order after normal Node ordering has selected placements. It uses backtracking only when this greedy placement cannot complete the unit, and every expanded placement state consumes the configured `maxSearchStates` budget. It also enforces `maxCandidateDomainsPerTask`, `maxPlanningAttempts`, and a planning deadline. Budget exhaustion returns `XPUTopologyPlanningBudgetExceeded`, creates no reservation, and is retryable planning pressure rather than a false `NotEnoughResources` result. The planner never bypasses queue, gang, priority, preemption, NodeShard, or network-topology checks.
 
 `TryReserve(plan)` is the topology ledger's internal all-or-nothing hold. It validates every selected ID against the current ledger and either creates every scheduler-side hold or creates none. Locks use canonical fabric/domain/device order to avoid deadlock.
 
@@ -1479,7 +1465,7 @@ The annotation-only milestone does **not** change the HyperNode CRD/controller, 
 | --- | --- | --- |
 | Topology ingestion | Node annotation provider and mock provider. | CRD, Device Plugin companion, vendor API, and DRA `ResourceSlice` providers. |
 | Device type | Healthy full devices represented as integral Kubernetes extended-resource requests from one regular container per planned Pod. | DRA claim selectors, init-container or multi-container xPU requests, MIG, vGPU, fractional allocation, vendor-specific memory/core geometry, and device configuration. |
-| Locality | Hard/soft Node-local device domains and Compact preference. | Vendor-specific link bandwidth models and runtime/NCCL ring construction. |
+| Locality | Hard/soft Node-local device domains. | Vendor-specific link bandwidth models and runtime/NCCL ring construction. |
 | Cross-Node | Mock/KWOK fabric domains with optional HyperNode intersection. | Real NVL72 validation and automatically inferred cross-Node fabrics. |
 | Enforcement | Mock/compatible exact adapter contract, otherwise soft-mode-only observation. | A production Device Plugin companion or DRA driver enforcement adapter. |
 | Transactions | Parent-PodGroup and SubJob gang-plan reservation, error-returning `CommitWithParticipants` rollback integration, and batched bind-context handoff. | Atomic multi-Pod Kubernetes binding, hierarchical parent-plus-subgroup xPU composition, and topology-aware victim selection. |
@@ -1527,7 +1513,7 @@ The implementation is phased as follows:
 | Phase | Deliverable |
 | --- | --- |
 | 1 | Typed Job, PodGroup, and SubGroup policy API, Job partition-to-subgroup policy conversion, normal-Pod parent-policy annotation parsing and generated-PodGroup conversion, fail-closed policy validation, canonical types/cache, feature-gate and plugin configuration validation including leader-election and safe feature-drain validation, Node-inventory annotation/mock provider, ordered Node UID updates, liveness refresh, explicit fabric ownership and member identity, immutable indexes, and unit tests. |
-| 2 | One `SchedulerCache` snapshot carrying Node, HyperNode, and immutable xPU topology views; reviewed domain-summary integration for HyperNode and Node selection; hard/soft local-domain filtering; compact scoring; fit reasons; immutable policy validation; and disabled-feature regressions. |
+| 2 | One `SchedulerCache` snapshot carrying Node, HyperNode, and immutable xPU topology views; reviewed domain-summary integration for HyperNode and Node selection; hard/soft local-domain filtering and affinity scoring; fit reasons; immutable policy validation; and disabled-feature regressions. |
 | 3 | Gang-plan units, allocation-attempt checkpoints, linked ledger and adapter reservations, reservation lifecycle, `CommitWithParticipants`, reversible batch prebind and bind-context batch handoff, failure injection, leader-handoff recovery, and concurrency tests. |
 | 4 | Mock/KWOK cross-Node fabric and HyperNode intersection, E2E scenarios, benchmarks, operational metrics, and user documentation. |
 
@@ -1535,7 +1521,7 @@ Production DRA and Device Plugin companion adapters are follow-up work. The init
 
 ### Validation Plan
 
-Unit tests cover schema validation, source-generation ordering and reuse, effective freshness deadlines and invalid timestamps, stable identity, stale/conflicting updates, delayed `ClearFacts` after a newer replace, Node deletion and removal from scheduler scope, fabric ownership conflicts, live-device topology changes deferred until release, allocation/release/health reconciliation, preemption-driven release and missing-release reconciliation, adapter recovery after restart, one `SchedulerCache.Snapshot()` carrying consistent Node, HyperNode, and xPU topology views, typed Job, direct PodGroup, and subgroup policy propagation, Job partition-to-SubJob xPU conversion, normal-Pod annotation parsing and generated-PodGroup conversion, rejection of a policy annotation on a non-Volcano Pod, conflicting annotations in one generated PodGroup, omitted and compact strategy ordering, immutable policy rejection, parent-plus-subgroup policy rejection, fail-closed gate and plugin configuration validation including disabled-feature refusal with persisted policies, alpha fabric single-resource validation, one-common-fabric gang plans, alpha unsupported Pod request rejection, DRA-selector rejection, selected-ID handoff identity and rollback, adapter-provider identity contract validation, `minAvailable` gang-plan units with later allocation waves, normal-resource shadow planning, dry-run plan finalization without reservations, search-state budget exhaustion, adapter-reservation compensation, gang rollback, bind-context batch failure, reservation confirmation timeout, and reservation conflicts.
+Unit tests cover schema validation, source-generation ordering and reuse, effective freshness deadlines and invalid timestamps, stable identity, stale/conflicting updates, delayed `ClearFacts` after a newer replace, Node deletion and removal from scheduler scope, fabric ownership conflicts, live-device topology changes deferred until release, allocation/release/health reconciliation, preemption-driven release and missing-release reconciliation, adapter recovery after restart, one `SchedulerCache.Snapshot()` carrying consistent Node, HyperNode, and xPU topology views, typed Job, direct PodGroup, and subgroup policy propagation, Job partition-to-SubJob device-topology conversion, normal-Pod annotation parsing and generated-PodGroup conversion, rejection of a policy annotation on a non-Volcano Pod, conflicting annotations in one generated PodGroup, rejection of per-workload packing or spreading fields, immutable policy rejection, parent-plus-subgroup policy rejection, fail-closed gate and plugin configuration validation including disabled-feature refusal with persisted policies, alpha fabric single-resource validation, one-common-fabric gang plans, alpha unsupported Pod request rejection, DRA-selector rejection, selected-ID handoff identity and rollback, adapter-provider identity contract validation, `minAvailable` gang-plan units with later allocation waves, normal-resource shadow planning, dry-run plan finalization without reservations, search-state budget exhaustion, adapter-reservation compensation, gang rollback, bind-context batch failure, reservation confirmation timeout, and reservation conflicts.
 
 Additional regression tests prove that metadata-only provider heartbeats renew freshness without accepting changed topology content, a Node replacement with the same name starts `Pending`, and a fabric cannot revive until its owner republishes membership for replacement Node UIDs or generations. They also prove that a failed final reservation restores every worksheet, fit-error, nomination, and recorder decision before the next plan attempt, a batch prebind failure dispatches no member, a leader promotion completes recovery before hard scheduling, and an unsafe watched configuration reload keeps the prior configuration active.
 
