@@ -24,7 +24,7 @@
     - [Availability and Aggregate Resource Safety](#availability-and-aggregate-resource-safety)
   - [Workload Policy](#workload-policy)
     - [Proposed API Types and Semantics](#proposed-api-types-and-semantics)
-    - [Subgroup xPU Policy](#subgroup-xpu-policy)
+    - [Subgroup Device Policy](#subgroup-device-policy)
     - [Admission Webhook Validation](#admission-webhook-validation)
   - [Providers and Allocation Adapters](#providers-and-allocation-adapters)
     - [Allocation Adapter Contract](#allocation-adapter-contract)
@@ -613,15 +613,15 @@ Provider fields describing shared memory, cores, virtual-device count, MIG, or o
 
 ### Workload Policy
 
-xPU topology scheduling applies only to Pods whose `spec.schedulerName` is `volcano`. It cannot influence Pods scheduled by Kubernetes `kube-scheduler`. The scheduler reads a canonical policy from either `PodGroup.spec.xpuTopology` for the entire PodGroup or the matching `PodGroup.spec.subGroupPolicy[].xpuTopology` for one existing SubJob:
+xPU topology scheduling applies only to Pods whose `spec.schedulerName` is `volcano`. It cannot influence Pods scheduled by Kubernetes `kube-scheduler`. The scheduler reads a canonical policy from either `PodGroup.spec.deviceTopology` for the entire PodGroup or the matching `PodGroup.spec.subGroupPolicy[].deviceTopology` for one existing SubJob:
 
-1. A Volcano Job uses typed `spec.xpuTopology`, which the Job controller copies to its generated `PodGroup.spec.xpuTopology`.
-2. A user who creates a PodGroup directly sets the same typed `spec.xpuTopology` field.
-3. A normal Volcano-scheduled Pod uses the documented `volcano.sh/xpu-topology` annotation. The PodGroup controller parses it as an `XPUTopologySpec` and writes the normalized result to the automatically generated PodGroup.
+1. A Volcano Job uses typed `spec.deviceTopology`, which the Job controller copies to its generated `PodGroup.spec.deviceTopology`.
+2. A user who creates a PodGroup directly sets the same typed `spec.deviceTopology` field.
+3. A normal Volcano-scheduled Pod uses the documented `volcano.sh/device-topology` annotation. The PodGroup controller parses it as a `DeviceTopologySpec` and writes the normalized result to the automatically generated PodGroup.
 
-This lets Deployments, StatefulSets, and other controllers use whole-PodGroup xPU topology scheduling by setting `schedulerName: volcano` and the xPU annotation in their Pod template. `volcano.sh/group-min-member` defines the gang size when such a workload needs gang-wide xPU planning. A workload without that annotation still receives the existing Volcano scheduling behavior.
+This lets Deployments, StatefulSets, and other controllers use whole-PodGroup xPU topology scheduling by setting `schedulerName: volcano` and the device-topology annotation in their Pod template. `volcano.sh/group-min-member` defines the gang size when such a workload needs gang-wide xPU planning. A workload without that annotation still receives the existing Volcano scheduling behavior.
 
-The alpha policy applies uniformly to its scheduling unit: the complete PodGroup for `spec.xpuTopology`, or one matching SubJob for `subGroupPolicy[].xpuTopology`. Every Task admitted under that policy must resolve every declared extended-resource requirement to exactly one regular container with an integral whole-device request. A Task that does not request that resource is not silently skipped, it makes its policy unit ineligible with `XPUTopologyUnsupportedPodRequest`. A parent `xpuTopology` policy and any subgroup `xpuTopology` policy are mutually exclusive in alpha. This avoids ambiguous fabric scope and inheritance. Heterogeneous accelerator Task templates, init-container accelerator requests, per-container policy targeting, and hierarchical parent-plus-subgroup xPU composition are deferred because they require explicit inheritance and allocation-lifecycle semantics. Exact API names and versions require API review. The following examples are illustrative.
+The alpha policy applies uniformly to its scheduling unit: the complete PodGroup for `spec.deviceTopology`, or one matching SubJob for `subGroupPolicy[].deviceTopology`. Every Task admitted under that policy must resolve every declared extended-resource requirement to exactly one regular container with an integral whole-device request. A Task that does not request that resource is not silently skipped, it makes its policy unit ineligible with `XPUTopologyUnsupportedPodRequest`. A parent `deviceTopology` policy and any subgroup `deviceTopology` policy are mutually exclusive in alpha. This avoids ambiguous fabric scope and inheritance. Heterogeneous accelerator Task templates, init-container accelerator requests, per-container policy targeting, and hierarchical parent-plus-subgroup xPU composition are deferred because they require explicit inheritance and allocation-lifecycle semantics. Exact API names and versions require API review. The following examples are illustrative.
 
 **Volcano Job:**
 
@@ -632,7 +632,7 @@ metadata:
   name: local-domain-training
 spec:
   schedulerName: volcano
-  xpuTopology:
+  deviceTopology:
     requirements:
     - resource:
         extendedResourceName: nvidia.com/gpu
@@ -663,7 +663,7 @@ metadata:
   name: direct-workers
 spec:
   minMember: 2
-  xpuTopology:
+  deviceTopology:
     requirements:
     - resource:
         extendedResourceName: nvidia.com/gpu
@@ -681,7 +681,7 @@ kind: Pod
 metadata:
   name: single-trainer
   annotations:
-    volcano.sh/xpu-topology: >-
+    volcano.sh/device-topology: >-
       {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
 spec:
   schedulerName: volcano
@@ -708,7 +708,7 @@ spec:
     metadata:
       annotations:
         volcano.sh/group-min-member: "8"
-        volcano.sh/xpu-topology: >-
+        volcano.sh/device-topology: >-
           {"requirements":[{"resource":{"extendedResourceName":"nvidia.com/gpu"},"mode":"hard","allocationStrategy":"Compact"}]}
     spec:
       schedulerName: volcano
@@ -720,13 +720,13 @@ spec:
             nvidia.com/gpu: 1
 ```
 
-The same template form works for Deployments, StatefulSets, ReplicaSets, Kubernetes Jobs, CronJobs, and custom controllers that create Pods. The annotation value is a serialized `XPUTopologySpec`. The PodGroup controller validates and normalizes it before writing the generated PodGroup field. Every Pod that resolves to the same generated PodGroup must have the same normalized policy. A malformed or conflicting annotation must fail closed rather than producing an incomplete gang policy.
+The same template form works for Deployments, StatefulSets, ReplicaSets, Kubernetes Jobs, CronJobs, and custom controllers that create Pods. The annotation value is a serialized `DeviceTopologySpec`. The PodGroup controller validates and normalizes it before writing the generated PodGroup field. Every Pod that resolves to the same generated PodGroup must have the same normalized policy. A malformed or conflicting annotation must fail closed rather than producing an incomplete gang policy.
 
 `claimName` is reserved for a future DRA-backed version of this API. It will identify the matching entry in each Pod's `spec.resourceClaims` once Volcano has a compatible ResourceSlice provider and DRA allocation adapter:
 
 ```yaml
 spec:
-  xpuTopology:
+  deviceTopology:
     requirements:
     - resource:
         claimName: accelerator
@@ -745,32 +745,32 @@ The webhook validates feature-gate use, one resource selector per requirement, a
 
 #### Proposed API Types and Semantics
 
-`xpuTopology` is an optional typed field on `JobSpec`, `PodGroupSpec`, and `SubGroupPolicySpec`. For normal Volcano-scheduled Pods, `volcano.sh/xpu-topology` is the documented serialized form of the parent-level type and is converted to the generated `PodGroupSpec` field by the PodGroup controller. The scheduler reads only typed PodGroup and subgroup forms. It does not replace existing `networkTopology`, `subGroupPolicy`, Pod `affinity`, or Pod `topologySpreadConstraints`. Those fields continue to express network placement, group membership, and ordinary Kubernetes Pod placement. `xpuTopology` expresses only accelerator-domain intent. Its nested `mode` fields use the same `hard` and `soft` vocabulary as `networkTopology.mode`.
+`deviceTopology` is an optional typed field on `JobSpec`, `PodGroupSpec`, and `SubGroupPolicySpec`. For normal Volcano-scheduled Pods, `volcano.sh/device-topology` is the documented serialized form of the parent-level type and is converted to the generated `PodGroupSpec` field by the PodGroup controller. The scheduler reads only typed PodGroup and subgroup forms. It does not replace existing `networkTopology`, `subGroupPolicy`, Pod `affinity`, or Pod `topologySpreadConstraints`. Those fields continue to express accelerator-domain intent. `deviceTopology` expresses only accelerator-domain intent. Its nested `mode` fields use the same `hard` and `soft` vocabulary as `networkTopology.mode`.
 
 The names and annotation serialization below are proposed for API review. They make the ownership and validation surface concrete. The normal-Pod annotation is an explicit, documented compatibility API, not an additional policy model.
 
 ```go
-type XPUTopologySpec struct {
-    Requirements []XPUResourceTopologyRequirement `json:"requirements,omitempty"`
-    Fabric       *XPUFabricAffinity               `json:"fabric,omitempty"`
+type DeviceTopologySpec struct {
+    Requirements []DeviceTopologyRequirement `json:"requirements,omitempty"`
+    Fabric       *DeviceFabricAffinity        `json:"fabric,omitempty"`
 }
 
-type XPUResourceTopologyRequirement struct {
-    Resource           XPUResourceSelector   `json:"resource"`
-    Mode               XPUTopologyMode       `json:"mode,omitempty"`
-    AllocationStrategy XPUAllocationStrategy `json:"allocationStrategy,omitempty"`
+type DeviceTopologyRequirement struct {
+    Resource           DeviceResourceSelector   `json:"resource"`
+    Mode               DeviceTopologyMode       `json:"mode,omitempty"`
+    AllocationStrategy DeviceAllocationStrategy `json:"allocationStrategy,omitempty"`
 }
 
-type XPUResourceSelector struct {
+type DeviceResourceSelector struct {
     ExtendedResourceName corev1.ResourceName `json:"extendedResourceName,omitempty"`
     ClaimName            string              `json:"claimName,omitempty"`
 }
 
-type XPUFabricAffinity struct {
-    Mode XPUTopologyMode `json:"mode,omitempty"`
+type DeviceFabricAffinity struct {
+    Mode DeviceTopologyMode `json:"mode,omitempty"`
 }
 
-// SubGroupPolicySpec is the existing PodGroup subgroup API. XPUTopology adds
+// SubGroupPolicySpec is the existing PodGroup subgroup API. DeviceTopology adds
 // accelerator-domain intent for every Task selected into one matching SubJob.
 type SubGroupPolicySpec struct {
     Name           string
@@ -779,17 +779,17 @@ type SubGroupPolicySpec struct {
     LabelSelector  *metav1.LabelSelector
     MatchLabelKeys []string
     NetworkTopology *NetworkTopologySpec
-    XPUTopology     *XPUTopologySpec `json:"xpuTopology,omitempty"`
+    DeviceTopology  *DeviceTopologySpec `json:"deviceTopology,omitempty"`
 }
 
-// XPUAllocationStrategy is an optional placement preference. It never changes
+// DeviceAllocationStrategy is an optional placement preference. It never changes
 // hard eligibility or bypasses normal Volcano scoring.
-type XPUAllocationStrategy string
+type DeviceAllocationStrategy string
 
 const (
-    // XPUAllocationStrategyCompact prefers packing placements into the
+    // DeviceAllocationStrategyCompact prefers packing placements into the
     // smallest fitting domains to preserve other domains.
-    XPUAllocationStrategyCompact XPUAllocationStrategy = "Compact"
+    DeviceAllocationStrategyCompact DeviceAllocationStrategy = "Compact"
 )
 ```
 
@@ -802,13 +802,13 @@ The resource and fabric `mode` fields accept `hard` or `soft`. `hard` is a filte
 
 Fabric affinity is deliberately narrow in alpha. A policy that sets `fabric` must contain exactly one resource requirement. That requirement identifies the accelerator resource whose device domains must belong to one fabric selected for the policy's complete scheduling unit: either the parent PodGroup gang unit or one SubJob. With `hard` mode, every placement in that unit must use a member Node and local domain of that same fabric. A later API may add an explicit fabric resource selector for multi-resource policies, but the alpha must reject that ambiguous case.
 
-All requirements on a Task are ANDed. For example, a Task requiring a same-domain GPU group and a hard fabric must satisfy both rules. A PodGroup with neither a parent `xpuTopology` field nor a matching subgroup `xpuTopology` field receives no topology-specific filter, score, plan, or reservation and follows the existing scheduler behavior.
+All requirements on a Task are ANDed. For example, a Task requiring a same-domain GPU group and a hard fabric must satisfy both rules. A PodGroup with neither a parent `deviceTopology` field nor a matching subgroup `deviceTopology` field receives no topology-specific filter, score, plan, or reservation and follows the existing scheduler behavior.
 
-#### Subgroup xPU Policy
+#### Subgroup Device Policy
 
 Volcano already converts every matching `subGroupPolicy` into a scheduler `SubJobInfo`. The xPU design reuses that existing unit: it does not create a parallel xPU subgroup, duplicate gang accounting, or introduce a second allocation loop. `subGroupSize` and `minSubGroups` retain their existing gang semantics; xPU plans devices only after the existing `allocate` action identifies the exact SubJob Task unit to admit.
 
-For a Volcano Job, `tasks[].partitionPolicy.xpuTopology` is the Job-facing representation. The Job controller copies it to the generated `PodGroup.spec.subGroupPolicy[].xpuTopology` together with the existing partition size, task selector, partition label key, and network topology fields. The batch API may use a package-local xPU type and convert it to the scheduling API type, just as it does for network topology.
+For a Volcano Job, `tasks[].partitionPolicy.deviceTopology` is the Job-facing representation. The Job controller copies it to the generated `PodGroup.spec.subGroupPolicy[].deviceTopology` together with the existing partition size, task selector, partition label key, and network topology fields. The batch API may use a package-local device-topology type and convert it to the scheduling API type, just as it does for network topology.
 
 ```yaml
 apiVersion: batch.volcano.sh/v1alpha1
@@ -827,7 +827,7 @@ spec:
       networkTopology:
         mode: hard
         highestTierAllowed: 1
-      xpuTopology:
+      deviceTopology:
         requirements:
         - resource:
             extendedResourceName: nvidia.com/gpu
@@ -865,7 +865,7 @@ spec:
         app: trainer
     matchLabelKeys:
     - training.example/partition
-    xpuTopology:
+    deviceTopology:
       requirements:
       - resource:
           extendedResourceName: nvidia.com/gpu
@@ -873,22 +873,22 @@ spec:
         allocationStrategy: Compact
 ```
 
-Normal controller-created Pods continue to support the documented parent-level `volcano.sh/xpu-topology` annotation. Subgroup xPU policy for those workloads requires a reviewed, documented serialization of the same typed `SubGroupPolicySpec` list plus stable workload labels. The alpha does not invent a second implicit annotation format; users who need subgroup xPU policy initially create the typed PodGroup directly or use a Volcano Job partition policy.
+Normal controller-created Pods continue to support the documented parent-level `volcano.sh/device-topology` annotation. Subgroup device policy for those workloads requires a reviewed, documented serialization of the same typed `SubGroupPolicySpec` list plus stable workload labels. The alpha does not invent a second implicit annotation format; users who need subgroup device policy initially create the typed PodGroup directly or use a Volcano Job partition policy.
 
 #### Admission Webhook Validation
 
 The webhook makes invalid intent fail at admission instead of becoming an ambiguous runtime placement failure:
 
-1. Reject a non-empty `xpuTopology` policy unless `XPUTopologyAwareScheduling` is enabled.
+1. Reject a non-empty `deviceTopology` policy unless `XPUTopologyAwareScheduling` is enabled.
 2. Require at least one resource requirement and exactly one of `extendedResourceName` or `claimName` in each requirement.
 3. Require a valid extended resource name. Reject CPU and memory because the first scope is full accelerator devices, not CPU/NUMA topology.
 4. Accept only `hard` or `soft` mode and `Compact` as the initial allocation strategy.
 5. Reject duplicate requirements targeting the same resource selector in one policy.
 6. Reject `claimName` in alpha. A later DRA-capable version will validate the alias at admission and resolve it against each Task Pod at runtime.
 7. Reject a policy that sets `fabric` with anything other than one resource requirement in alpha.
-8. Treat parent and subgroup `xpuTopology` as create-only in alpha on the Job, its scheduler-canonical PodGroup, and every `SubGroupPolicy`. Users create a new Job or controller rollout to change topology intent.
-9. For every subgroup `xpuTopology`, require a positive `subGroupSize` and a non-empty selector. Reject a PodGroup that sets both parent `xpuTopology` and any subgroup `xpuTopology` in alpha. The scheduler validates policy-compatible full-device requests after it observes the actual matching Tasks.
-10. Reject a non-empty `volcano.sh/xpu-topology` annotation unless the Pod uses `schedulerName: volcano`. Validate that the annotation decodes to the same schema as `XPUTopologySpec` and that every Pod in an automatically generated PodGroup resolves to the same normalized policy. The PodGroup controller must reject conflicting updates rather than overwriting an existing policy. It does not accept subgroup xPU policy through an undocumented annotation.
+8. Treat parent and subgroup `deviceTopology` as create-only in alpha on the Job, its scheduler-canonical PodGroup, and every `SubGroupPolicy`. Users create a new Job or controller rollout to change topology intent.
+9. For every subgroup `deviceTopology`, require a positive `subGroupSize` and a non-empty selector. Reject a PodGroup that sets both parent `deviceTopology` and any subgroup `deviceTopology` in alpha. The scheduler validates policy-compatible full-device requests after it observes the actual matching Tasks.
+10. Reject a non-empty `volcano.sh/device-topology` annotation unless the Pod uses `schedulerName: volcano`. Validate that the annotation decodes to the same schema as `DeviceTopologySpec` and that every Pod in an automatically generated PodGroup resolves to the same normalized policy. The PodGroup controller must reject conflicting updates rather than overwriting an existing policy. It does not accept subgroup device policy through an undocumented annotation.
 
 The alpha makes this policy create-only because it is an input to filtering, scoring, gang planning, device reservation, and the selected-ID bind handoff. A Job, direct PodGroup, or a set of normal Pods can all produce the same canonical PodGroup policy. Ordinary Kubernetes object updates are not coordinated transactionally with an in-memory scheduling session or a live adapter reservation. For example, changing a hard fabric rule or resource selector after a session created its plan could make its reserved IDs and handoff inconsistent with the persisted policy, or leave one gang with mixed intent. A future mutable-policy API would need a versioned canonical policy, atomic propagation across workload sources, final reservation preflight against that version, and defined release/replan behavior. It is deliberately deferred rather than silently accepting unsafe updates.
 
@@ -1018,7 +1018,7 @@ Each accelerator resource must have exactly one exact-allocation owner for a sch
 
 | Workload and integration | xPU behavior | Allocation owner |
 | --- | --- | --- |
-| No `xpuTopology` policy | Does not filter, score, plan, or reserve topology IDs. | Existing `deviceshare`, DRA, or Kubernetes allocation path. |
+| No `deviceTopology` policy | Does not filter, score, plan, or reserve topology IDs. | Existing `deviceshare`, DRA, or Kubernetes allocation path. |
 | `soft` policy with legacy `deviceshare` only | May use current topology facts for a score but creates no exact-ID reservation and makes no exact-ID guarantee. | Existing `deviceshare` backend. |
 | `hard` policy with legacy `deviceshare` only | Rejects the placement with `XPUAssignmentNotEnforceable`. | None, a best-effort result must not be presented as hard. |
 | `hard` policy with a compatible adapter | Plans and reserves exact IDs, attaches an immutable bind handoff, then requires adapter confirmation. | The configured xPU allocation adapter. |
@@ -1469,7 +1469,7 @@ The following package layout keeps source parsing, reusable scheduler API types,
 | Allocation integration | `pkg/scheduler/actions/allocate/allocate.go` | Request one complete plan before tentative allocation of the applicable gang unit. |
 | Configuration | `pkg/scheduler/conf/volcano_features.go`, scheduler config/Helm values | Feature gate, plugin arguments, leader-election requirement for exact mode, replica consistency, hot-reload validation, and safe feature-drain validation. |
 | Annotation security | Helm manifests and admission-policy or webhook configuration | Dedicated publisher ServiceAccount, least-privilege Node RBAC, annotation-key write protection, and audit configuration. |
-| API, webhook, Job, and PodGroup controller | batch and scheduling API types, generated code, Job and PodGroup validation, `pkg/controllers/job/job_controller_actions.go`, `pkg/controllers/podgroup/pg_controller_handler.go` | Add typed parent and `SubGroupPolicy.xpuTopology` fields, copy a Job partition xPU policy into its generated subgroup policy, parse and normalize normal-Pod parent policies into generated PodGroups, and reject malformed, conflicting, or ambiguous parent-plus-subgroup policy updates. |
+| API, webhook, Job, and PodGroup controller | batch and scheduling API types, generated code, Job and PodGroup validation, `pkg/controllers/job/job_controller_actions.go`, `pkg/controllers/podgroup/pg_controller_handler.go` | Add typed parent and `SubGroupPolicy.deviceTopology` fields, copy a Job partition device policy into its generated subgroup policy, parse and normalize normal-Pod parent policies into generated PodGroups, and reject malformed, conflicting, or ambiguous parent-plus-subgroup policy updates. |
 
 The annotation-only milestone does **not** change the HyperNode CRD/controller, DRA cache setup, Device Plugin implementation, or existing device-specific APIs. It consumes existing Node events, and it may reference HyperNodes only through the existing scheduler session/cache view. A later topology-CRD provider would require new staged API types, generated clients/informers/deep-copies, manifests, and webhook validation, that work is intentionally not hidden in the alpha milestone.
 
@@ -1518,7 +1518,7 @@ Budget exhaustion returns `XPUTopologyPlanningBudgetExceeded`, creates no reserv
 
 A watched scheduler configuration reload is staged. The scheduler validates the complete candidate configuration, including feature gate, plugin, provider, adapter identity contract, and leader-election requirements, before replacing the active configuration. Removing the xPU plugin, disabling the gate, changing the exact-allocation owner, or changing the provider or identity namespace is a drain operation. If any nonterminal xPU PodGroup, active allocation, reservation, or recovery entry remains, the reload is rejected and the scheduler keeps its last accepted configuration. A session always completes with the configuration and immutable xPU view captured in its `ClusterInfo` snapshot.
 
-Disabling is a drain operation, not a normal configuration toggle. Before removing the plugin or disabling the gate, operators must run every scheduler replica with the feature still enabled until there are no nonterminal PodGroups with `xpuTopology`, no active xPU allocation, and no adapter reservation awaiting recovery. The scheduler's configuration validator checks this condition while the feature is enabled. Afterward, a gate-disabled scheduler performs a lightweight typed PodGroup scan before becoming ready. If it finds a nonterminal xPU policy, it remains not ready and reports that the feature must be re-enabled to drain or delete the workload. It must never schedule that persisted policy through the normal non-xPU path.
+Disabling is a drain operation, not a normal configuration toggle. Before removing the plugin or disabling the gate, operators must run every scheduler replica with the feature still enabled until there are no nonterminal PodGroups with `deviceTopology`, no active xPU allocation, and no adapter reservation awaiting recovery. The scheduler's configuration validator checks this condition while the feature is enabled. Afterward, a gate-disabled scheduler performs a lightweight typed PodGroup scan before becoming ready. If it finds a nonterminal xPU policy, it remains not ready and reports that the feature must be re-enabled to drain or delete the workload. It must never schedule that persisted policy through the normal non-xPU path.
 
 Only when that check succeeds do gate-disabled replicas create no provider watches or SchedulerCache xPU topology state, and existing workloads retain current scheduling behavior. A newly submitted non-empty xPU policy is rejected rather than silently ignored. The plugin must not be enabled on only some scheduler replicas.
 
@@ -1551,7 +1551,7 @@ KWOK E2E tests cover:
 8. a member Node leaving the scheduler scope or an owner Node deletion makes the affected fabric unavailable, and
 9. a `minAvailable` gang unit reserves only its admitted Tasks, while later Tasks receive a separate plan, and
 10. a Volcano Job partition creates independent SubJob xPU plans and reservations without mixing their device IDs or fabric selections, and
-11. a Deployment or StatefulSet Pod template with `schedulerName: volcano`, `volcano.sh/group-min-member`, and `volcano.sh/xpu-topology` produces an equivalent parent PodGroup policy and gang plan.
+11. a Deployment or StatefulSet Pod template with `schedulerName: volcano`, `volcano.sh/group-min-member`, and `volcano.sh/device-topology` produces an equivalent parent PodGroup policy and gang plan.
 
 Scale benchmarks simulate dense devices, fragmented capacity, large fabric sets, concurrent gangs, and high provider-update rates. User documentation will describe feature configuration, provider schema, enforcement guarantees, failure reasons, and troubleshooting. Once the API is accepted, the user-facing documentation will also be published through the `volcano-sh/website` repository.
 
