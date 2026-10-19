@@ -853,6 +853,7 @@ func (cc *jobcontroller) createOrUpdatePodGroup(job *batch.Job) error {
 				Queue:             job.Spec.Queue,
 				MinResources:      cc.calcPGMinResources(job),
 				PriorityClassName: job.Spec.PriorityClassName,
+				DeviceTopology:    convertDeviceTopologySpec(job.Spec.DeviceTopology),
 			},
 		}
 		if job.Spec.NetworkTopology != nil {
@@ -909,6 +910,12 @@ func (cc *jobcontroller) shouldUpdateExistingPodGroup(pg *scheduling.PodGroup, j
 	pgShouldUpdate := false
 	if pg.Spec.PriorityClassName != job.Spec.PriorityClassName {
 		pg.Spec.PriorityClassName = job.Spec.PriorityClassName
+		pgShouldUpdate = true
+	}
+
+	deviceTopology := convertDeviceTopologySpec(job.Spec.DeviceTopology)
+	if !equality.Semantic.DeepEqual(pg.Spec.DeviceTopology, deviceTopology) {
+		pg.Spec.DeviceTopology = deviceTopology
 		pgShouldUpdate = true
 	}
 
@@ -1183,5 +1190,33 @@ func getSubGroupPolicy(taskSpec batch.TaskSpec) scheduling.SubGroupPolicySpec {
 		}
 		subGroupPolicy.NetworkTopology = nt
 	}
+	subGroupPolicy.DeviceTopology = convertDeviceTopologySpec(taskSpec.PartitionPolicy.DeviceTopology)
 	return subGroupPolicy
+}
+
+func convertDeviceTopologySpec(spec *batch.DeviceTopologySpec) *scheduling.DeviceTopologySpec {
+	if spec == nil {
+		return nil
+	}
+
+	converted := &scheduling.DeviceTopologySpec{}
+	if spec.Requirements != nil {
+		converted.Requirements = make([]scheduling.DeviceTopologyRequirement, len(spec.Requirements))
+		for index, requirement := range spec.Requirements {
+			converted.Requirements[index] = scheduling.DeviceTopologyRequirement{
+				Resource: scheduling.DeviceResourceSelector{
+					ExtendedResourceName: requirement.Resource.ExtendedResourceName,
+					ClaimName:            requirement.Resource.ClaimName,
+				},
+				Mode: scheduling.DeviceTopologyMode(requirement.Mode),
+			}
+		}
+	}
+	if spec.Fabric != nil {
+		converted.Fabric = &scheduling.DeviceFabricAffinity{
+			Mode: scheduling.DeviceTopologyMode(spec.Fabric.Mode),
+		}
+	}
+
+	return converted
 }
