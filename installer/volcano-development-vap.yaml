@@ -319,6 +319,36 @@ spec:
             type: object
           spec:
             properties:
+              deviceTopology:
+                properties:
+                  fabric:
+                    properties:
+                      mode:
+                        enum:
+                        - hard
+                        - soft
+                        type: string
+                    type: object
+                  requirements:
+                    items:
+                      properties:
+                        mode:
+                          enum:
+                          - hard
+                          - soft
+                          type: string
+                        resource:
+                          properties:
+                            claimName:
+                              type: string
+                            extendedResourceName:
+                              type: string
+                          type: object
+                      required:
+                      - resource
+                      type: object
+                    type: array
+                type: object
               maxRetry:
                 default: 3
                 format: int32
@@ -435,6 +465,36 @@ spec:
                       type: string
                     partitionPolicy:
                       properties:
+                        deviceTopology:
+                          properties:
+                            fabric:
+                              properties:
+                                mode:
+                                  enum:
+                                  - hard
+                                  - soft
+                                  type: string
+                              type: object
+                            requirements:
+                              items:
+                                properties:
+                                  mode:
+                                    enum:
+                                    - hard
+                                    - soft
+                                    type: string
+                                  resource:
+                                    properties:
+                                      claimName:
+                                        type: string
+                                      extendedResourceName:
+                                        type: string
+                                    type: object
+                                required:
+                                - resource
+                                type: object
+                              type: array
+                          type: object
                         minPartitions:
                           default: 0
                           format: int32
@@ -4611,6 +4671,36 @@ spec:
                     type: object
                   spec:
                     properties:
+                      deviceTopology:
+                        properties:
+                          fabric:
+                            properties:
+                              mode:
+                                enum:
+                                - hard
+                                - soft
+                                type: string
+                            type: object
+                          requirements:
+                            items:
+                              properties:
+                                mode:
+                                  enum:
+                                  - hard
+                                  - soft
+                                  type: string
+                                resource:
+                                  properties:
+                                    claimName:
+                                      type: string
+                                    extendedResourceName:
+                                      type: string
+                                  type: object
+                              required:
+                              - resource
+                              type: object
+                            type: array
+                        type: object
                       maxRetry:
                         default: 3
                         format: int32
@@ -4727,6 +4817,36 @@ spec:
                               type: string
                             partitionPolicy:
                               properties:
+                                deviceTopology:
+                                  properties:
+                                    fabric:
+                                      properties:
+                                        mode:
+                                          enum:
+                                          - hard
+                                          - soft
+                                          type: string
+                                      type: object
+                                    requirements:
+                                      items:
+                                        properties:
+                                          mode:
+                                            enum:
+                                            - hard
+                                            - soft
+                                            type: string
+                                          resource:
+                                            properties:
+                                              claimName:
+                                                type: string
+                                              extendedResourceName:
+                                                type: string
+                                            type: object
+                                        required:
+                                        - resource
+                                        type: object
+                                      type: array
+                                  type: object
                                 minPartitions:
                                   default: 0
                                   format: int32
@@ -9404,6 +9524,54 @@ spec:
               Specification of the desired behavior of the pod group.
               More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#spec-and-status
             properties:
+              deviceTopology:
+                description: DeviceTopology defines accelerator-locality and fabric
+                  placement intent for the whole PodGroup.
+                properties:
+                  fabric:
+                    description: Fabric defines optional cross-Node accelerator fabric
+                      affinity.
+                    properties:
+                      mode:
+                        description: Mode controls whether this fabric affinity is
+                          required or preferred.
+                        enum:
+                        - hard
+                        - soft
+                        type: string
+                    type: object
+                  requirements:
+                    description: Requirements selects accelerator resources whose
+                      local topology should influence placement.
+                    items:
+                      description: DeviceTopologyRequirement defines topology intent
+                        for one accelerator resource selector.
+                      properties:
+                        mode:
+                          description: Mode controls whether this requirement is required
+                            or preferred.
+                          enum:
+                          - hard
+                          - soft
+                          type: string
+                        resource:
+                          description: Resource identifies the accelerator resource
+                            to which this requirement applies.
+                          properties:
+                            claimName:
+                              description: ClaimName identifies a Pod resourceClaims
+                                alias for a future DRA-backed workload.
+                              type: string
+                            extendedResourceName:
+                              description: ExtendedResourceName identifies a full-device
+                                Kubernetes extended resource, such as nvidia.com/gpu.
+                              type: string
+                          type: object
+                      required:
+                      - resource
+                      type: object
+                    type: array
+                type: object
               minMember:
                 description: |-
                   MinMember defines the minimal number of members/tasks to run the pod group;
@@ -9483,6 +9651,55 @@ spec:
                   Concurrent use with minTaskMember is not recommended, and SubGroupPolicy is the long-term evolution direction.
                 items:
                   properties:
+                    deviceTopology:
+                      description: DeviceTopology defines accelerator-locality and
+                        fabric placement intent for this matching subgroup.
+                      properties:
+                        fabric:
+                          description: Fabric defines optional cross-Node accelerator
+                            fabric affinity.
+                          properties:
+                            mode:
+                              description: Mode controls whether this fabric affinity
+                                is required or preferred.
+                              enum:
+                              - hard
+                              - soft
+                              type: string
+                          type: object
+                        requirements:
+                          description: Requirements selects accelerator resources
+                            whose local topology should influence placement.
+                          items:
+                            description: DeviceTopologyRequirement defines topology
+                              intent for one accelerator resource selector.
+                            properties:
+                              mode:
+                                description: Mode controls whether this requirement
+                                  is required or preferred.
+                                enum:
+                                - hard
+                                - soft
+                                type: string
+                              resource:
+                                description: Resource identifies the accelerator resource
+                                  to which this requirement applies.
+                                properties:
+                                  claimName:
+                                    description: ClaimName identifies a Pod resourceClaims
+                                      alias for a future DRA-backed workload.
+                                    type: string
+                                  extendedResourceName:
+                                    description: ExtendedResourceName identifies a
+                                      full-device Kubernetes extended resource, such
+                                      as nvidia.com/gpu.
+                                    type: string
+                                type: object
+                            required:
+                            - resource
+                            type: object
+                          type: array
+                      type: object
                     labelSelector:
                       description: |-
                         LabelSelector is used to find matching pods.
@@ -9590,6 +9807,254 @@ spec:
                       type: integer
                   type: object
                 type: array
+              topologyAffinity:
+                description: TopologyAffinity expresses inter-group topology affinity
+                  and anti-affinity on the HyperNode tree.
+                properties:
+                  podGroupAntiAffinity:
+                    description: PodGroupAntiAffinity defines required/preferred anti-affinity
+                      against other PodGroups.
+                    properties:
+                      preferred:
+                        items:
+                          description: PodGroupAffinityTerm selects matching PodGroups
+                            and the topology tier for HyperNode comparison.
+                          properties:
+                            namespaceSelector:
+                              description: |-
+                                A label selector is a label query over a set of resources. The result of matchLabels and
+                                matchExpressions are ANDed. An empty label selector matches all objects. A null
+                                label selector matches no objects.
+                              properties:
+                                matchExpressions:
+                                  description: matchExpressions is a list of label
+                                    selector requirements. The requirements are ANDed.
+                                  items:
+                                    description: |-
+                                      A label selector requirement is a selector that contains values, a key, and an operator that
+                                      relates the key and values.
+                                    properties:
+                                      key:
+                                        description: key is the label key that the
+                                          selector applies to.
+                                        type: string
+                                      operator:
+                                        description: |-
+                                          operator represents a key's relationship to a set of values.
+                                          Valid operators are In, NotIn, Exists and DoesNotExist.
+                                        type: string
+                                      values:
+                                        description: |-
+                                          values is an array of string values. If the operator is In or NotIn,
+                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                          the values array must be empty. This array is replaced during a strategic
+                                          merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                matchLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                  type: object
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            podGroupSelector:
+                              description: |-
+                                A label selector is a label query over a set of resources. The result of matchLabels and
+                                matchExpressions are ANDed. An empty label selector matches all objects. A null
+                                label selector matches no objects.
+                              properties:
+                                matchExpressions:
+                                  description: matchExpressions is a list of label
+                                    selector requirements. The requirements are ANDed.
+                                  items:
+                                    description: |-
+                                      A label selector requirement is a selector that contains values, a key, and an operator that
+                                      relates the key and values.
+                                    properties:
+                                      key:
+                                        description: key is the label key that the
+                                          selector applies to.
+                                        type: string
+                                      operator:
+                                        description: |-
+                                          operator represents a key's relationship to a set of values.
+                                          Valid operators are In, NotIn, Exists and DoesNotExist.
+                                        type: string
+                                      values:
+                                        description: |-
+                                          values is an array of string values. If the operator is In or NotIn,
+                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                          the values array must be empty. This array is replaced during a strategic
+                                          merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                matchLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                  type: object
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            topologyTier:
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            topologyTierName:
+                              maxLength: 253
+                              type: string
+                            weight:
+                              format: int32
+                              maximum: 100
+                              minimum: 1
+                              type: integer
+                          required:
+                          - podGroupSelector
+                          type: object
+                        type: array
+                      required:
+                        items:
+                          description: PodGroupAffinityTerm selects matching PodGroups
+                            and the topology tier for HyperNode comparison.
+                          properties:
+                            namespaceSelector:
+                              description: |-
+                                A label selector is a label query over a set of resources. The result of matchLabels and
+                                matchExpressions are ANDed. An empty label selector matches all objects. A null
+                                label selector matches no objects.
+                              properties:
+                                matchExpressions:
+                                  description: matchExpressions is a list of label
+                                    selector requirements. The requirements are ANDed.
+                                  items:
+                                    description: |-
+                                      A label selector requirement is a selector that contains values, a key, and an operator that
+                                      relates the key and values.
+                                    properties:
+                                      key:
+                                        description: key is the label key that the
+                                          selector applies to.
+                                        type: string
+                                      operator:
+                                        description: |-
+                                          operator represents a key's relationship to a set of values.
+                                          Valid operators are In, NotIn, Exists and DoesNotExist.
+                                        type: string
+                                      values:
+                                        description: |-
+                                          values is an array of string values. If the operator is In or NotIn,
+                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                          the values array must be empty. This array is replaced during a strategic
+                                          merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                matchLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                  type: object
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            podGroupSelector:
+                              description: |-
+                                A label selector is a label query over a set of resources. The result of matchLabels and
+                                matchExpressions are ANDed. An empty label selector matches all objects. A null
+                                label selector matches no objects.
+                              properties:
+                                matchExpressions:
+                                  description: matchExpressions is a list of label
+                                    selector requirements. The requirements are ANDed.
+                                  items:
+                                    description: |-
+                                      A label selector requirement is a selector that contains values, a key, and an operator that
+                                      relates the key and values.
+                                    properties:
+                                      key:
+                                        description: key is the label key that the
+                                          selector applies to.
+                                        type: string
+                                      operator:
+                                        description: |-
+                                          operator represents a key's relationship to a set of values.
+                                          Valid operators are In, NotIn, Exists and DoesNotExist.
+                                        type: string
+                                      values:
+                                        description: |-
+                                          values is an array of string values. If the operator is In or NotIn,
+                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                          the values array must be empty. This array is replaced during a strategic
+                                          merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                matchLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                  type: object
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            topologyTier:
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            topologyTierName:
+                              maxLength: 253
+                              type: string
+                            weight:
+                              format: int32
+                              maximum: 100
+                              minimum: 1
+                              type: integer
+                          required:
+                          - podGroupSelector
+                          type: object
+                        type: array
+                    type: object
+                type: object
             type: object
           status:
             description: |-
@@ -11817,6 +12282,36 @@ spec:
             type: object
           spec:
             properties:
+              deviceTopology:
+                properties:
+                  fabric:
+                    properties:
+                      mode:
+                        enum:
+                        - hard
+                        - soft
+                        type: string
+                    type: object
+                  requirements:
+                    items:
+                      properties:
+                        mode:
+                          enum:
+                          - hard
+                          - soft
+                          type: string
+                        resource:
+                          properties:
+                            claimName:
+                              type: string
+                            extendedResourceName:
+                              type: string
+                          type: object
+                      required:
+                      - resource
+                      type: object
+                    type: array
+                type: object
               maxRetry:
                 default: 3
                 format: int32
@@ -11933,6 +12428,36 @@ spec:
                       type: string
                     partitionPolicy:
                       properties:
+                        deviceTopology:
+                          properties:
+                            fabric:
+                              properties:
+                                mode:
+                                  enum:
+                                  - hard
+                                  - soft
+                                  type: string
+                              type: object
+                            requirements:
+                              items:
+                                properties:
+                                  mode:
+                                    enum:
+                                    - hard
+                                    - soft
+                                    type: string
+                                  resource:
+                                    properties:
+                                      claimName:
+                                        type: string
+                                      extendedResourceName:
+                                        type: string
+                                    type: object
+                                required:
+                                - resource
+                                type: object
+                              type: array
+                          type: object
                         minPartitions:
                           default: 0
                           format: int32
@@ -16066,6 +16591,36 @@ spec:
                       properties:
                         jobSpec:
                           properties:
+                            deviceTopology:
+                              properties:
+                                fabric:
+                                  properties:
+                                    mode:
+                                      enum:
+                                      - hard
+                                      - soft
+                                      type: string
+                                  type: object
+                                requirements:
+                                  items:
+                                    properties:
+                                      mode:
+                                        enum:
+                                        - hard
+                                        - soft
+                                        type: string
+                                      resource:
+                                        properties:
+                                          claimName:
+                                            type: string
+                                          extendedResourceName:
+                                            type: string
+                                        type: object
+                                    required:
+                                    - resource
+                                    type: object
+                                  type: array
+                              type: object
                             maxRetry:
                               default: 3
                               format: int32
@@ -16182,6 +16737,36 @@ spec:
                                     type: string
                                   partitionPolicy:
                                     properties:
+                                      deviceTopology:
+                                        properties:
+                                          fabric:
+                                            properties:
+                                              mode:
+                                                enum:
+                                                - hard
+                                                - soft
+                                                type: string
+                                            type: object
+                                          requirements:
+                                            items:
+                                              properties:
+                                                mode:
+                                                  enum:
+                                                  - hard
+                                                  - soft
+                                                  type: string
+                                                resource:
+                                                  properties:
+                                                    claimName:
+                                                      type: string
+                                                    extendedResourceName:
+                                                      type: string
+                                                  type: object
+                                              required:
+                                              - resource
+                                              type: object
+                                            type: array
+                                        type: object
                                       minPartitions:
                                         default: 0
                                         format: int32
