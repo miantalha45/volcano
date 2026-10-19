@@ -1635,6 +1635,7 @@ func (sc *SchedulerCache) Snapshot() *schedulingapi.ClusterInfo {
 	sc.Mutex.Lock()
 	defer sc.Mutex.Unlock()
 
+	deviceTopology := sc.ensureDeviceTopologyState().snapshot
 	snapshot := &schedulingapi.ClusterInfo{
 		Nodes:                make(map[string]*schedulingapi.NodeInfo),
 		HyperNodes:           make(map[string]*schedulingapi.HyperNodeInfo),
@@ -1648,6 +1649,7 @@ func (sc *SchedulerCache) Snapshot() *schedulingapi.ClusterInfo {
 		NodeList:             make([]string, len(sc.NodeList)),
 		CSINodesStatus:       make(map[string]*schedulingapi.CSINodeStatusInfo),
 		NodesInShard:         sets.Set[string]{},
+		DeviceTopology:       deviceTopology,
 	}
 
 	copy(snapshot.NodeList, sc.NodeList)
