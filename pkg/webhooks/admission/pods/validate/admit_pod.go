@@ -17,7 +17,9 @@ limitations under the License.
 package validate
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -97,6 +99,10 @@ allow pods to create when
 2. check pod budget annotations configure
 */
 func validatePod(pod *v1.Pod, reviewResponse *admissionv1.AdmissionResponse) string {
+	if err := validateDeviceTopologyAnnotation(pod); err != nil {
+		reviewResponse.Allowed = false
+		return err.Error()
+	}
 	if !slices.Contains(config.SchedulerNames, pod.Spec.SchedulerName) {
 		return ""
 	}
@@ -109,6 +115,37 @@ func validatePod(pod *v1.Pod, reviewResponse *admissionv1.AdmissionResponse) str
 	}
 
 	return msg
+}
+
+func validateDeviceTopologyAnnotation(pod *v1.Pod) error {
+	if pod.Annotations == nil {
+		return nil
+	}
+	rawPolicy, exists := pod.Annotations[vcv1beta1.DeviceTopologyAnnotationKey]
+	if !exists || rawPolicy == "" {
+		return nil
+	}
+	if !slices.Contains(config.SchedulerNames, pod.Spec.SchedulerName) {
+		return fmt.Errorf("annotation %q requires a configured Volcano scheduler", vcv1beta1.DeviceTopologyAnnotationKey)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(rawPolicy))
+	decoder.DisallowUnknownFields()
+	var policy vcv1beta1.DeviceTopologySpec
+	if err := decoder.Decode(&policy); err != nil {
+		return fmt.Errorf("annotation %q must contain a valid device topology policy: %w", vcv1beta1.DeviceTopologyAnnotationKey, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("annotation %q must contain exactly one device topology policy", vcv1beta1.DeviceTopologyAnnotationKey)
+		}
+		return fmt.Errorf("annotation %q must contain exactly one device topology policy: %w", vcv1beta1.DeviceTopologyAnnotationKey, err)
+	}
+	if errs := util.ValidateSchedulingDeviceTopology(&policy); len(errs) > 0 {
+		return fmt.Errorf("annotation %q is invalid: %s", vcv1beta1.DeviceTopologyAnnotationKey, strings.Join(errs, "; "))
+	}
+
+	return nil
 }
 
 func validateAnnotation(pod *v1.Pod) error {
