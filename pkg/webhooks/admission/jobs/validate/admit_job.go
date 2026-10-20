@@ -141,6 +141,9 @@ func validateJobCreate(job *v1alpha1.Job, reviewResponse *admissionv1.AdmissionR
 	}
 
 	b.WriteString(validateNetworkTopology(job.Spec.NetworkTopology))
+	if msg := validateJobDeviceTopology(job); msg != "" {
+		fmt.Fprintf(&b, " %s;", msg)
+	}
 	hasDependenciesBetweenTasks := false
 	for index, task := range job.Spec.Tasks {
 		if task.DependsOn != nil {
@@ -232,6 +235,16 @@ func validateJobQueue(workloadNamespace, queueReference string) string {
 }
 
 func validateJobUpdate(old, new *v1alpha1.Job) error {
+	if len(old.Spec.Tasks) != len(new.Spec.Tasks) {
+		return fmt.Errorf("job updates may not add or remove tasks")
+	}
+	if !util.BatchJobDeviceTopologyPoliciesEqual(&old.Spec, &new.Spec) {
+		return fmt.Errorf("deviceTopology policies are immutable")
+	}
+	if msg := validateJobDeviceTopology(new); msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+
 	var totalReplicas int32
 	for _, task := range new.Spec.Tasks {
 		if task.Replicas < 0 {
@@ -264,9 +277,6 @@ func validateJobUpdate(old, new *v1alpha1.Job) error {
 		return fmt.Errorf("must not specify 'highestTierAllowed' and 'highestTierName' in networkTopology simultaneously")
 	}
 
-	if len(old.Spec.Tasks) != len(new.Spec.Tasks) {
-		return fmt.Errorf("job updates may not add or remove tasks")
-	}
 	// other fields under spec are not allowed to mutate
 	new.Spec.MinAvailable = old.Spec.MinAvailable
 	new.Spec.PriorityClassName = old.Spec.PriorityClassName
@@ -296,6 +306,10 @@ func validateJobUpdate(old, new *v1alpha1.Job) error {
 	}
 
 	return nil
+}
+
+func validateJobDeviceTopology(job *v1alpha1.Job) string {
+	return strings.Join(util.ValidateBatchJobDeviceTopology(&job.Spec), "; ")
 }
 
 func validatePartitionPolicy(task v1alpha1.TaskSpec, job *v1alpha1.Job) string {

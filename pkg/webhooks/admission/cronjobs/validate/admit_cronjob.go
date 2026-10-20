@@ -128,6 +128,9 @@ func validateCronJobUpdate(old, new *v1alpha1.CronJob) error {
 	if msg := validateCronJob(new); msg != "" {
 		return errors.New(msg)
 	}
+	if !util.BatchJobDeviceTopologyPoliciesEqual(&old.Spec.JobTemplate.Spec, &new.Spec.JobTemplate.Spec) {
+		return errors.New("deviceTopology policies are immutable")
+	}
 	if old.Spec.JobTemplate.Spec.Queue != new.Spec.JobTemplate.Spec.Queue {
 		if msg := validateCronJobQueue(new); msg != "" {
 			return errors.New(msg)
@@ -160,11 +163,22 @@ func validateCronJobQueue(cronjob *v1alpha1.CronJob) string {
 // message is trimmed so the result has no stray leading or trailing spaces.
 func validateCronJob(cronjob *v1alpha1.CronJob) string {
 	var errs []string
+	if msg := validateCronJobDeviceTopology(cronjob); msg != "" {
+		errs = append(errs, msg)
+	}
 	if msg := strings.TrimSpace(validateCronjobSpec(&cronjob.Spec, cronjob.Namespace)); msg != "" {
 		errs = append(errs, msg)
 	}
 	if msg := strings.TrimSpace(validateCronJobName(cronjob.Name)); msg != "" {
 		errs = append(errs, msg)
+	}
+	return strings.Join(errs, "; ")
+}
+
+func validateCronJobDeviceTopology(cronjob *v1alpha1.CronJob) string {
+	errs := util.ValidateBatchJobDeviceTopology(&cronjob.Spec.JobTemplate.Spec)
+	for index, err := range errs {
+		errs[index] = "spec.jobTemplate.spec." + err
 	}
 	return strings.Join(errs, "; ")
 }
