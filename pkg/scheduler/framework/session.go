@@ -23,6 +23,7 @@ limitations under the License.
 package framework
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"sort"
@@ -1003,6 +1004,32 @@ func (ssn *Session) RecordPodGroupEvent(podGroup *api.PodGroup, eventType, reaso
 // SharedDRAManager returns the shared DRAManager from cache
 func (ssn *Session) SharedDRAManager() fwk.SharedDRAManager {
 	return ssn.cache.SharedDRAManager()
+}
+
+// ReserveDeviceTopologyPlan asks the cache's optional trusted topology
+// reservation extension to hold every exact device in one complete plan.
+func (ssn *Session) ReserveDeviceTopologyPlan(ctx context.Context, plan api.TopologyPlacementPlan) (api.TopologyReservation, error) {
+	if ssn == nil || ssn.cache == nil {
+		return api.TopologyReservation{}, fmt.Errorf("device topology reservation requires a scheduler session cache")
+	}
+	reservationCache, supported := ssn.cache.(cache.DeviceTopologyReservationCache)
+	if !supported {
+		return api.TopologyReservation{}, fmt.Errorf("scheduler cache does not support device topology reservations")
+	}
+	return reservationCache.ReserveDeviceTopologyPlan(ctx, plan)
+}
+
+// ReleaseDeviceTopologyReservation asks the cache's optional trusted topology
+// reservation extension to release a previously accepted exact-device plan.
+func (ssn *Session) ReleaseDeviceTopologyReservation(ctx context.Context, reservation api.TopologyReservation) error {
+	if ssn == nil || ssn.cache == nil {
+		return fmt.Errorf("device topology release requires a scheduler session cache")
+	}
+	reservationCache, supported := ssn.cache.(cache.DeviceTopologyReservationCache)
+	if !supported {
+		return fmt.Errorf("scheduler cache does not support device topology reservations")
+	}
+	return reservationCache.ReleaseDeviceTopologyReservation(ctx, reservation)
 }
 
 // GetMetricsConf returns the metrics server related configuration from cache
