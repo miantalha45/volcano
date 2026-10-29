@@ -47,6 +47,85 @@ func WithDeviceTopologyProviderRegistry(registry *provider.Registry) Option {
 	}
 }
 
+// ConfigureDeviceTopologyProviders installs the immutable provider ownership
+// registry and source instances before SchedulerCache begins processing Nodes.
+// A nil registry with no sources explicitly disables topology source sync.
+func (sc *SchedulerCache) ConfigureDeviceTopologyProviders(registry *provider.Registry, sources []provider.NodeTopologyProvider) error {
+	if err := validateDeviceTopologyProviderConfiguration(registry, sources); err != nil {
+		return err
+	}
+
+	sc.Mutex.Lock()
+	defer sc.Mutex.Unlock()
+	if sc.deviceTopologyProvidersFrozen {
+		return fmt.Errorf("device topology providers cannot be configured after SchedulerCache starts")
+	}
+	if sc.deviceTopologyProvidersConfigured {
+		return fmt.Errorf("device topology providers are already configured")
+	}
+
+	sc.deviceTopologyProviderRegistry = registry
+	sc.deviceTopologyProviders = append([]provider.NodeTopologyProvider(nil), sources...)
+	sc.deviceTopologyProvidersConfigured = true
+	return nil
+}
+
+// freezeDeviceTopologyProviders prevents changes to source ownership once the
+// cache begins informer processing. The caller does not need to hold the lock.
+func (sc *SchedulerCache) freezeDeviceTopologyProviders() {
+	sc.Mutex.Lock()
+	defer sc.Mutex.Unlock()
+	sc.deviceTopologyProvidersFrozen = true
+}
+
+// deviceTopologyProviderSources returns a stable copy of the configured
+// sources so Node synchronization can call providers without holding the cache
+// mutex.
+func (sc *SchedulerCache) deviceTopologyProviderSources() []provider.NodeTopologyProvider {
+	sc.Mutex.Lock()
+	defer sc.Mutex.Unlock()
+	return append([]provider.NodeTopologyProvider(nil), sc.deviceTopologyProviders...)
+}
+
+// validateDeviceTopologyProviderConfiguration ensures every configured source
+// corresponds to exactly one entry in the authoritative ownership registry.
+func validateDeviceTopologyProviderConfiguration(registry *provider.Registry, sources []provider.NodeTopologyProvider) error {
+	if len(sources) == 0 {
+		if registry != nil && len(registry.ProviderIDs()) > 0 {
+			return fmt.Errorf("device topology provider registry has no configured sources")
+		}
+		return nil
+	}
+	if registry == nil {
+		return fmt.Errorf("device topology providers require an ownership registry")
+	}
+
+	registeredIDs := registry.ProviderIDs()
+	if len(sources) != len(registeredIDs) {
+		return fmt.Errorf("device topology source count %d does not match registry provider count %d", len(sources), len(registeredIDs))
+	}
+	seen := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		if source == nil {
+			return fmt.Errorf("device topology provider source is required")
+		}
+		providerID := source.ID()
+		if providerID == "" {
+			return fmt.Errorf("device topology provider source ID is required")
+		}
+		if _, exists := seen[providerID]; exists {
+			return fmt.Errorf("device topology provider source %q is configured more than once", providerID)
+		}
+		seen[providerID] = struct{}{}
+	}
+	for _, providerID := range registeredIDs {
+		if _, exists := seen[providerID]; !exists {
+			return fmt.Errorf("device topology registry provider %q has no configured source", providerID)
+		}
+	}
+	return nil
+}
+
 // WithDeviceTopologyAdapterRegistry configures the immutable allocation
 // adapter ownership map used to reserve exact device IDs for hard topology.
 // A nil registry leaves topology facts observable but prevents reservations.

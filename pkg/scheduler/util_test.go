@@ -253,3 +253,35 @@ tiers:
 			expectedConfigurations, configurations)
 	}
 }
+
+func TestUnmarshalSchedulerConfigurationDeviceTopology(t *testing.T) {
+	configuration := `
+deviceTopology:
+  providers:
+  - id: node-annotation-inventory
+    type: annotation
+    identityNamespace: nvidia-gpu-uuid-v1
+    resources:
+    - nvidia.com/gpu
+    maxPayloadBytes: 65536
+`
+
+	schedulerConfiguration, err := unmarshalSchedulerConfiguration(configuration)
+	if err != nil {
+		t.Fatalf("unmarshalSchedulerConfiguration() error = %v", err)
+	}
+	if schedulerConfiguration.DeviceTopology == nil {
+		t.Fatal("DeviceTopology = nil, want configured topology providers")
+	}
+	providers := schedulerConfiguration.DeviceTopology.Providers
+	if len(providers) != 1 {
+		t.Fatalf("provider count = %d, want 1", len(providers))
+	}
+	provider := providers[0]
+	if provider.ID != "node-annotation-inventory" || provider.Type != conf.DeviceTopologyProviderTypeAnnotation || provider.IdentityNamespace != "nvidia-gpu-uuid-v1" || provider.MaxPayloadBytes != 65536 {
+		t.Fatalf("provider = %#v, want decoded annotation provider configuration", provider)
+	}
+	if len(provider.Resources) != 1 || provider.Resources[0] != "nvidia.com/gpu" {
+		t.Fatalf("provider resources = %#v, want nvidia.com/gpu", provider.Resources)
+	}
+}

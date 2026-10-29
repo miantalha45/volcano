@@ -18,6 +18,7 @@ package provider
 
 import (
 	"fmt"
+	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -119,6 +120,21 @@ func (registry *Registry) ValidateOwnership(update ProviderNodeUpdate) error {
 	}
 
 	return nil
+}
+
+// ProviderIDs returns the configured provider IDs in stable order. The
+// returned slice is independent from the immutable registry.
+func (registry *Registry) ProviderIDs() []string {
+	if registry == nil {
+		return nil
+	}
+
+	providerIDs := make([]string, 0, len(registry.registrationsByProvider))
+	for providerID := range registry.registrationsByProvider {
+		providerIDs = append(providerIDs, providerID)
+	}
+	sort.Strings(providerIDs)
+	return providerIDs
 }
 
 func (registry *Registry) validateResourceOwnership(registration Registration, resourceName corev1.ResourceName, identityNamespace string) error {
