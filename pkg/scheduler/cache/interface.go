@@ -34,6 +34,7 @@ import (
 	nodeshardv1alpha1 "volcano.sh/apis/pkg/apis/shard/v1alpha1"
 	vcclient "volcano.sh/apis/pkg/client/clientset/versioned"
 	"volcano.sh/volcano/pkg/scheduler/api"
+	"volcano.sh/volcano/pkg/scheduler/topology/provider"
 )
 
 // Cache collects pods/nodes/queues information
@@ -116,6 +117,14 @@ type Cache interface {
 type DeviceTopologyReservationCache interface {
 	ReserveDeviceTopologyPlan(ctx context.Context, plan api.TopologyPlacementPlan) (api.TopologyReservation, error)
 	ReleaseDeviceTopologyReservation(ctx context.Context, reservation api.TopologyReservation) error
+}
+
+// DeviceTopologyProviderCache is an optional Cache extension that receives
+// startup-only topology provider configuration. It is intentionally separate
+// from Cache so existing cache implementations do not need trusted topology
+// source support until they opt in.
+type DeviceTopologyProviderCache interface {
+	ConfigureDeviceTopologyProviders(registry *provider.Registry, sources []provider.NodeTopologyProvider) error
 }
 
 // Binder interface for binding task and hostname
