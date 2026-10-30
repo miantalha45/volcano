@@ -117,6 +117,9 @@ type Cache interface {
 type DeviceTopologyReservationCache interface {
 	ReserveDeviceTopologyPlan(ctx context.Context, plan api.TopologyPlacementPlan) (api.TopologyReservation, error)
 	ReleaseDeviceTopologyReservation(ctx context.Context, reservation api.TopologyReservation) error
+	// DeviceTopologySnapshot returns the current immutable topology view,
+	// including availability changes made by reservations and releases.
+	DeviceTopologySnapshot() *api.TopologySnapshot
 }
 
 // DeviceTopologyProviderCache is an optional Cache extension that receives

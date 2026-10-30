@@ -18,6 +18,7 @@ package devicetopologyaware
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -226,4 +227,116 @@ func (testAdapter *reservationForwardingTestAdapter) Release(context.Context, ad
 
 func (testAdapter *reservationForwardingTestAdapter) Recover(context.Context) ([]adapter.AdapterReservationState, error) {
 	return nil, nil
+}
+
+func TestReserveGangPlanReservesTwoGangsInOneSession(t *testing.T) {
+	now := time.Now()
+	node := newCandidateTestNode("node-a")
+	node.Node.ResourceVersion = "1"
+	firstTask := newDeviceTopologyTask("first-worker", []corev1.Container{containerWithRequest("trainer", "nvidia.com/gpu", "1")}, nil)
+	secondTask := newDeviceTopologyTask("second-worker", []corev1.Container{containerWithRequest("trainer", "nvidia.com/gpu", "1")}, nil)
+	firstJob := api.NewJobInfo("first-job", firstTask)
+	secondJob := api.NewJobInfo("second-job", secondTask)
+	facts := newCandidateTopologyFacts(node, []candidateDomainSpec{{value: "gpu-domain", deviceCount: 2, healthy: 2}}, now.Add(time.Hour))
+
+	providerRegistry, err := provider.NewRegistry([]provider.Registration{{
+		ProviderID:        candidateTestProviderID,
+		IdentityNamespace: candidateTestNamespace,
+		ResourceNames:     []corev1.ResourceName{"nvidia.com/gpu"},
+	}})
+	if err != nil {
+		t.Fatalf("provider.NewRegistry() error = %v", err)
+	}
+	allocationAdapter := &uniqueTokenTestAdapter{reservationForwardingTestAdapter: &reservationForwardingTestAdapter{contract: adapter.DeviceIdentityContract{
+		ProviderID:   candidateTestProviderID,
+		ResourceName: "nvidia.com/gpu",
+		Namespace:    candidateTestNamespace,
+	}}}
+	adapterRegistry, err := adapter.NewRegistry([]adapter.AllocationAdapter{allocationAdapter})
+	if err != nil {
+		t.Fatalf("adapter.NewRegistry() error = %v", err)
+	}
+
+	schedulerCache := cache.NewDefaultMockSchedulerCache("device-topology-two-gang-reservation-test")
+	t.Cleanup(func() {
+		cache.ShutdownMockSchedulerCache(schedulerCache)
+	})
+	cache.WithDeviceTopologyProviderRegistry(providerRegistry)(schedulerCache)
+	cache.WithDeviceTopologyAdapterRegistry(adapterRegistry)(schedulerCache)
+	if err := schedulerCache.AddOrUpdateNode(node.Node); err != nil {
+		t.Fatalf("AddOrUpdateNode() error = %v", err)
+	}
+	if err := schedulerCache.ApplyProviderNodeUpdate(provider.ProviderNodeUpdate{
+		ProviderID:          facts.ProviderID,
+		NodeName:            facts.NodeName,
+		NodeUID:             facts.NodeUID,
+		NodeResourceVersion: facts.NodeResourceVersion,
+		SourceGeneration:    facts.SourceGeneration,
+		ObservedAt:          facts.ObservedAt,
+		FreshUntil:          facts.FreshUntil,
+		Operation:           provider.ReplaceFacts,
+		Facts:               &facts,
+	}); err != nil {
+		t.Fatalf("ApplyProviderNodeUpdate() error = %v", err)
+	}
+
+	session := framework.OpenSession(schedulerCache, nil, nil)
+	session.Jobs = map[api.JobID]*api.JobInfo{firstJob.UID: firstJob, secondJob.UID: secondJob}
+	t.Cleanup(func() {
+		session.Jobs = nil
+		framework.CloseSession(session)
+	})
+	domain := session.DeviceTopology.LocalDomains(node.Node.UID, "nvidia.com/gpu")[0]
+	gangPlanFor := func(job *api.JobInfo, task *api.TaskInfo) *deviceTopologyGangPlan {
+		// Both plans use the session snapshot, as planGang does.
+		return &deviceTopologyGangPlan{
+			jobID:            job.UID,
+			schedulingUnitID: string(job.UID),
+			revision:         session.DeviceTopology.Revision(),
+			placements: []deviceTopologyGangPlacement{{
+				taskID:        task.UID,
+				nodeName:      node.Name,
+				nodeUID:       node.Node.UID,
+				containerName: "trainer",
+				resourceName:  "nvidia.com/gpu",
+				quantity:      1,
+				localDomainID: domain.ID,
+			}},
+		}
+	}
+
+	plugin := &deviceTopologyPlugin{}
+	firstReservation, err := plugin.reserveGangPlan(context.Background(), session, gangPlanFor(firstJob, firstTask))
+	if err != nil {
+		t.Fatalf("first reserveGangPlan() error = %v", err)
+	}
+	secondReservation, err := plugin.reserveGangPlan(context.Background(), session, gangPlanFor(secondJob, secondTask))
+	if err != nil {
+		t.Fatalf("second reserveGangPlan() in the same session error = %v, want the second free device reserved", err)
+	}
+
+	firstDevice := firstReservation.Plan.Placements[0].Assignments[0].DeviceIDs[0]
+	secondDevice := secondReservation.Plan.Placements[0].Assignments[0].DeviceIDs[0]
+	if firstDevice == secondDevice {
+		t.Fatalf("both gangs reserved device %q", firstDevice.String())
+	}
+	for _, reservation := range []api.TopologyReservation{secondReservation, firstReservation} {
+		if err := session.ReleaseDeviceTopologyReservation(context.Background(), reservation); err != nil {
+			t.Fatalf("ReleaseDeviceTopologyReservation() error = %v", err)
+		}
+	}
+}
+
+// uniqueTokenTestAdapter returns a different token for each Reserve call, so
+// several live reservations can be released independently.
+type uniqueTokenTestAdapter struct {
+	*reservationForwardingTestAdapter
+}
+
+func (testAdapter *uniqueTokenTestAdapter) Reserve(_ context.Context, plan api.TopologyPlacementPlan) (adapter.AdapterReservation, error) {
+	testAdapter.reservedPlans = append(testAdapter.reservedPlans, plan.Clone())
+	return adapter.AdapterReservation{
+		Token:      fmt.Sprintf("reservation-token-%d", len(testAdapter.reservedPlans)),
+		PlanDigest: fmt.Sprintf("reservation-digest-%d", len(testAdapter.reservedPlans)),
+	}, nil
 }
