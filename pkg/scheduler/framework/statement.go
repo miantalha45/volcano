@@ -23,12 +23,14 @@ limitations under the License.
 package framework
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"k8s.io/klog/v2"
 
 	"volcano.sh/volcano/pkg/scheduler/api"
+	"volcano.sh/volcano/pkg/scheduler/cache"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
 )
 
@@ -423,6 +425,105 @@ func (s *Statement) Commit() {
 		}
 	}
 	s.operations = nil
+}
+
+// CommitWithParticipants commits a statement through the optional
+// transactional batch-bind cache extension. It preserves legacy Commit
+// behavior, including pipelined operations, when no registered participant
+// needs preparation. A prepared batch must contain only allocations, and a
+// failed prepare, commit, or cache admission discards every reversible
+// in-memory operation before any Pod bind context is submitted.
+func (s *Statement) CommitWithParticipants(ctx context.Context) error {
+	if s == nil {
+		return errors.New("statement is nil")
+	}
+	if len(s.operations) == 0 {
+		return nil
+	}
+	if s.ssn == nil || s.ssn.cache == nil {
+		return errors.New("statement has no scheduler session cache")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	batchCache, supportsBatchBind := s.ssn.cache.(cache.BatchBindCache)
+	if !supportsBatchBind {
+		s.Commit()
+		return nil
+	}
+
+	// Non-allocation operations are rejected only after a participant opts in,
+	// so statements without batch preparation keep the legacy Commit path.
+	bindContexts := make([]*cache.BindContext, 0, len(s.operations))
+	allocationOnly := true
+	var nonAllocation Operation
+	for _, operation := range s.operations {
+		if operation.name != Allocate {
+			if allocationOnly {
+				allocationOnly = false
+				nonAllocation = operation.name
+			}
+			continue
+		}
+		if operation.task == nil {
+			s.Discard()
+			return errors.New("transactional batch bind contains a nil allocation Task")
+		}
+		if _, exists := s.ssn.Jobs[operation.task.Job]; !exists {
+			s.Discard()
+			return fmt.Errorf("transactional batch bind cannot find Job %q", operation.task.Job)
+		}
+		bindContexts = append(bindContexts, s.ssn.CreateBindContext(operation.task))
+	}
+	if len(bindContexts) == 0 {
+		s.Commit()
+		return nil
+	}
+
+	preparation, err := batchCache.PrepareBindBatch(ctx, bindContexts)
+	if err != nil {
+		s.Discard()
+		return fmt.Errorf("prepare transactional batch bind: %w", err)
+	}
+	if preparation == nil {
+		s.Commit()
+		return nil
+	}
+	if !allocationOnly {
+		rollbackErr := preparation.Rollback(ctx)
+		s.Discard()
+		mixedErr := fmt.Errorf("transactional batch bind only supports allocation operations, found operation %d", nonAllocation)
+		if rollbackErr != nil {
+			return errors.Join(mixedErr, rollbackErr)
+		}
+		return mixedErr
+	}
+
+	if err := preparation.Commit(ctx); err != nil {
+		rollbackErr := preparation.Rollback(ctx)
+		s.Discard()
+		if rollbackErr != nil {
+			return errors.Join(fmt.Errorf("commit transactional batch bind preparation: %w", err), rollbackErr)
+		}
+		return fmt.Errorf("commit transactional batch bind preparation: %w", err)
+	}
+	if err := batchCache.AddBindBatch(bindContexts); err != nil {
+		rollbackErr := preparation.Rollback(ctx)
+		s.Discard()
+		if rollbackErr != nil {
+			return errors.Join(fmt.Errorf("admit transactional batch bind: %w", err), rollbackErr)
+		}
+		return fmt.Errorf("admit transactional batch bind: %w", err)
+	}
+
+	for _, operation := range s.operations {
+		operation.task.ClearLastTxContext()
+		s.ssn.Jobs[operation.task.Job].UpdateTaskStatus(operation.task, api.Binding)
+		metrics.UpdateTaskScheduleDuration(metrics.TaskStageAssumed, metrics.Duration(operation.task.Pod.CreationTimestamp.Time))
+	}
+	s.operations = nil
+	return nil
 }
 
 // Merge transfers operations from the given statements into this statement.

@@ -35,6 +35,7 @@ const (
 type deviceTopologyPlugin struct {
 	policies map[policyUnitKey]*resolvedDeviceTopologyPolicy
 	errors   map[policyUnitKey]error
+	session  *framework.Session
 }
 
 // New creates a device topology-aware scheduler plugin.
@@ -56,7 +57,14 @@ func (plugin *deviceTopologyPlugin) Name() string {
 func (plugin *deviceTopologyPlugin) OnSessionOpen(session *framework.Session) {
 	clear(plugin.policies)
 	clear(plugin.errors)
-	if session == nil || !utilfeature.DefaultFeatureGate.Enabled(features.DeviceTopologyAwareScheduling) {
+	plugin.session = session
+	if session == nil {
+		return
+	}
+	// Register even when the feature gate is disabled so a later session cannot
+	// retain this plugin's stale session-scoped batch binder registration.
+	session.RegisterBinder(plugin.Name(), plugin)
+	if !utilfeature.DefaultFeatureGate.Enabled(features.DeviceTopologyAwareScheduling) {
 		return
 	}
 
@@ -77,6 +85,7 @@ func (plugin *deviceTopologyPlugin) OnSessionOpen(session *framework.Session) {
 func (plugin *deviceTopologyPlugin) OnSessionClose(_ *framework.Session) {
 	clear(plugin.policies)
 	clear(plugin.errors)
+	plugin.session = nil
 }
 
 // resolveJob records a resolved policy or a fail-closed error for every policy
