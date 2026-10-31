@@ -182,8 +182,11 @@ type SchedulerCache struct {
 	registeredHandlers map[string]cache.ResourceEventHandlerRegistration
 
 	BindFlowChannel chan *BindContext
-	bindCache       []*BindContext
-	batchNum        int
+	// BindBatchFlowChannel preserves one transaction's contexts as a single
+	// queue item after they have passed batch pre-bind preparation.
+	BindBatchFlowChannel chan []*BindContext
+	bindCache            []*BindContext
+	batchNum             int
 
 	// A map from image name to its imageState.
 	imageStates map[string]*imageState
@@ -515,6 +518,7 @@ func (sc *SchedulerCache) updateNodeSelectors(nodeSelectors []string) {
 // setBatchBindParallel configure the parallel when binding tasks to apiserver
 func (sc *SchedulerCache) setBatchBindParallel() {
 	sc.BindFlowChannel = make(chan *BindContext, 5000)
+	sc.BindBatchFlowChannel = make(chan []*BindContext, 5000)
 	var batchNum int
 	batchNum, err := strconv.Atoi(os.Getenv("BATCH_BIND_NUM"))
 	if err == nil && batchNum > 0 {
@@ -1555,6 +1559,17 @@ func (sc *SchedulerCache) AddBindTask(bindContext *BindContext) error {
 func (sc *SchedulerCache) processBindTask() {
 	for {
 		select {
+		case bindContexts, ok := <-sc.BindBatchFlowChannel:
+			if !ok {
+				return
+			}
+			if len(bindContexts) == 0 {
+				continue
+			}
+			if len(sc.bindCache) > 0 {
+				sc.BindTask()
+			}
+			sc.bindContexts(bindContexts)
 		case bindContext, ok := <-sc.BindFlowChannel:
 			if !ok {
 				return
@@ -1565,17 +1580,15 @@ func (sc *SchedulerCache) processBindTask() {
 				sc.BindTask()
 			}
 		default:
-		}
-
-		if len(sc.BindFlowChannel) == 0 {
-			break
+			if len(sc.BindFlowChannel) == 0 && len(sc.BindBatchFlowChannel) == 0 {
+				if len(sc.bindCache) == 0 {
+					return
+				}
+				sc.BindTask()
+				return
+			}
 		}
 	}
-
-	if len(sc.bindCache) == 0 {
-		return
-	}
-	sc.BindTask()
 }
 
 // executePreBind executes PreBind for one bindContext
@@ -1633,7 +1646,20 @@ func (sc *SchedulerCache) BindTask() {
 	tmpBindCache := make([]*BindContext, len(sc.bindCache))
 	copy(tmpBindCache, sc.bindCache)
 
-	// Currently, bindContexts only contain 1 element.
+	// The slice here needs to point to a new underlying array, otherwise bindCache may not be able to trigger garbage collection immediately
+	// if it is not expanded, causing memory leaks.
+	sc.bindCache = make([]*BindContext, 0)
+	sc.bindContexts(tmpBindCache)
+}
+
+// bindContexts runs the existing per-Pod pre-bind and Kubernetes bind flow for
+// one cache-admitted batch. Transactional batch pre-binders have already
+// completed before AddBindBatch reaches this asynchronous path.
+func (sc *SchedulerCache) bindContexts(bindContexts []*BindContext) {
+	if len(bindContexts) == 0 {
+		return
+	}
+
 	go func(bindContexts []*BindContext) {
 		logger := klog.Background()
 		ctx := klog.NewContext(context.Background(), logger)
@@ -1643,11 +1669,7 @@ func (sc *SchedulerCache) BindTask() {
 		preBinders := sc.binderRegistry.getRegisteredPreBinders()
 		successfulPreBindContexts := sc.executePreBinds(cancelCtx, bindContexts, preBinders)
 		sc.Bind(ctx, successfulPreBindContexts, preBinders)
-	}(tmpBindCache)
-
-	// The slice here needs to point to a new underlying array, otherwise bindCache may not be able to trigger garbage collection immediately
-	// if it is not expanded, causing memory leaks.
-	sc.bindCache = make([]*BindContext, 0)
+	}(bindContexts)
 }
 
 // Snapshot returns the complete snapshot of the cluster from cache
