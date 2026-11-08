@@ -320,6 +320,7 @@ func (sc *SchedulerCache) syncTask(oldTask *schedulingapi.TaskInfo) error {
 				klog.Errorf("Failed to delete Pod <%v/%v> and remove from cache: %s", oldTask.Namespace, oldTask.Name, err.Error())
 				return err
 			}
+			sc.releaseEndedPodDeviceTopologyLocked(oldTask.Pod)
 			klog.V(3).Infof("Pod <%v/%v> was deleted, removed from cache.", oldTask.Namespace, oldTask.Name)
 
 			return nil
@@ -590,6 +591,9 @@ func (sc *SchedulerCache) UpdatePod(oldObj, newObj interface{}) {
 
 	sc.Mutex.Lock()
 	err := sc.updatePod(oldPod, newPod)
+	if isTerminated(schedulingapi.GetTaskStatus(newPod)) {
+		sc.releaseEndedPodDeviceTopologyLocked(newPod)
+	}
 	sc.Mutex.Unlock()
 	if err != nil {
 		klog.Errorf("Failed to update pod %v in cache: %v", oldPod.Name, err)
@@ -621,6 +625,7 @@ func (sc *SchedulerCache) DeletePod(obj interface{}) {
 	sc.Mutex.Lock()
 	sc.clearUnassignedNumaPod(pod)
 	err := sc.deletePod(pod)
+	sc.releaseEndedPodDeviceTopologyLocked(pod)
 	sc.Mutex.Unlock()
 	if err != nil {
 		klog.Errorf("Failed to delete pod %v from cache: %v", pod.Name, err)
