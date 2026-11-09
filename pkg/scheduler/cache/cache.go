@@ -250,9 +250,12 @@ type SchedulerCache struct {
 	// deviceTopologyAdapterCallTimeout bounds one allocation adapter call made
 	// during a scheduling attempt. A zero value uses the default timeout.
 	deviceTopologyAdapterCallTimeout time.Duration
-	// deviceTopologyPodReleaseQueue holds Pods whose Releasing devices wait
-	// for an adapter release.
+	// deviceTopologyPodReleaseQueue holds Pods whose devices wait for an
+	// adapter release.
 	deviceTopologyPodReleaseQueue workqueue.TypedRateLimitingInterface[types.UID]
+	// deviceTopologyPodConfirmQueue holds bound Pods whose Binding devices wait
+	// for an adapter confirmation.
+	deviceTopologyPodConfirmQueue workqueue.TypedRateLimitingInterface[types.UID]
 }
 
 type multiSchedulerInfo struct {
@@ -668,7 +671,8 @@ func newSchedulerCache(config *rest.Config, schedulerNames []string, defaultQueu
 		nodeWorkers:         nodeWorkers,
 		resourceSyncTimeout: resourceSyncTimeout,
 
-		deviceTopologyPodReleaseQueue: newDeviceTopologyPodReleaseQueue(),
+		deviceTopologyPodReleaseQueue: newDeviceTopologyPodQueue(),
+		deviceTopologyPodConfirmQueue: newDeviceTopologyPodQueue(),
 	}
 	for _, option := range cacheOptions {
 		option(sc)
@@ -1035,6 +1039,9 @@ func (sc *SchedulerCache) Run(stopCh <-chan struct{}) {
 	// Release the devices of ended Pods.
 	go wait.Until(sc.processDeviceTopologyPodReleaseQueue, 0, stopCh)
 
+	// Confirm the devices of bound Pods.
+	go wait.Until(sc.processDeviceTopologyPodConfirmQueue, 0, stopCh)
+
 	// Get metrics data
 	klog.V(3).Infof("Start metrics collection, metricsConf is %v", sc.metricsConf)
 	interval, err := time.ParseDuration(sc.metricsConf["interval"])
@@ -1159,9 +1166,11 @@ func (sc *SchedulerCache) Bind(ctx context.Context, bindContexts []*BindContext,
 		klog.V(3).Infof("There are %d tasks in total and %d binds failed, latency %v", len(readyToBindTasks), len(errMsg), time.Since(tmp))
 	}
 
+	boundTasks := make([]*schedulingapi.TaskInfo, 0, len(bindContexts))
 	for _, bindContext := range bindContexts {
 		if reason, ok := errMsg[bindContext.TaskInfo.UID]; !ok {
 			sc.Recorder.Eventf(bindContext.TaskInfo.Pod, v1.EventTypeNormal, "Scheduled", "Successfully assigned %v/%v to %v", bindContext.TaskInfo.Namespace, bindContext.TaskInfo.Name, bindContext.TaskInfo.NodeName)
+			boundTasks = append(boundTasks, bindContext.TaskInfo)
 		} else {
 			unschedulableMsg := fmt.Sprintf("failed to bind to node %s: %s", bindContext.TaskInfo.NodeName, reason)
 			if err := sc.taskUnschedulable(bindContext.TaskInfo, schedulingapi.PodReasonSchedulerError, unschedulableMsg, ""); err != nil {
@@ -1179,6 +1188,7 @@ func (sc *SchedulerCache) Bind(ctx context.Context, bindContexts []*BindContext,
 			sc.resyncTask(bindContext.TaskInfo)
 		}
 	}
+	sc.confirmBoundDeviceTopology(boundTasks)
 }
 
 // BindPodGroup binds job to silo cluster
